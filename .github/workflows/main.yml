@@ -25,13 +25,10 @@ jobs:
 
       - name: Show project files
         run: |
-          find extracted -type f | head -80
-          echo "=== MANIFEST ==="
-          cat $(find extracted -name AndroidManifest.xml | head -1)
-          echo "=== MAINACTIVITY ==="
-          cat $(find extracted -name 'MainActivity*' | head -1)
-          echo "=== BUILD.GRADLE ==="
-          cat $(find extracted -path '*app/build.gradle.kts' | head -1)
+          for f in $(find extracted -name 'BleMeshManager.kt' -o -name 'MeshService.kt' -o -name 'CryptoEngine.kt'); do
+            echo "=== $f ==="
+            cat "$f"
+          done
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
