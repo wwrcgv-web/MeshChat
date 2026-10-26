@@ -1,0 +1,40 @@
+name: Build MeshChat APK
+
+on:
+workflow_dispatch:
+push:
+paths:
+- 'MeshChat_prototype_android.zip'
+- '.github/workflows/main.yml'
+
+jobs:
+build:
+runs-on: ubuntu-latest
+steps:
+- name: Checkout repository
+uses: actions/checkout@v4
+
+  - name: Set up Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
+
+  - name: Unzip Android project
+    run: |
+      unzip -o MeshChat_prototype_android.zip -d project
+      find project -name gradlew -type f
+
+  - name: Build APK
+    run: |
+      cd project
+      PROJECT_DIR=$(find . -name settings.gradle.kts -type f -print -quit | xargs dirname)
+      cd "$PROJECT_DIR"
+      chmod +x gradlew
+      ./gradlew assembleDebug
+
+  - name: Upload APK
+    uses: actions/upload-artifact@v4
+    with:
+      name: MeshChat-APK
+      path: project/**/build/outputs/apk/debug/*.apk
