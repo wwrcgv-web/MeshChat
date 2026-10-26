@@ -6,6 +6,7 @@ name: Build MeshChat APK
     paths:
       - "MeshChat_prototype_android.zip"
       - ".github/workflows/main.yml"
+      - "overlay/**"
 
 jobs:
   build:
@@ -23,12 +24,9 @@ jobs:
       - name: Extract project
         run: unzip -o MeshChat_prototype_android.zip -d extracted
 
-      - name: Show project files
+      - name: Apply overlay
         run: |
-          for f in $(find extracted -name 'BleMeshManager.kt' -o -name 'MeshService.kt' -o -name 'CryptoEngine.kt'); do
-            echo "=== $f ==="
-            cat "$f"
-          done
+          if [ -d overlay ]; then cp -r overlay/. extracted/MeshChat/; fi
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
