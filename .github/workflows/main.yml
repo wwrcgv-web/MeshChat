@@ -4,8 +4,8 @@ on:
 workflow_dispatch:
 push:
 paths:
-- 'MeshChat_prototype_android.zip'
-- '.github/workflows/main.yml'
+- "MeshChat_prototype_android.zip"
+- ".github/workflows/main.yml"
 
 jobs:
 build:
@@ -18,18 +18,14 @@ uses: actions/checkout@v4
     uses: actions/setup-java@v4
     with:
       distribution: temurin
-      java-version: '17'
+      java-version: "17"
 
-  - name: Unzip Android project
-    run: |
-      unzip -o MeshChat_prototype_android.zip -d project
-      find project -name gradlew -type f
+  - name: Extract project
+    run: unzip -o MeshChat_prototype_android.zip -d project
 
   - name: Build APK
     run: |
       cd project
-      PROJECT_DIR=$(find . -name settings.gradle.kts -type f -print -quit | xargs dirname)
-      cd "$PROJECT_DIR"
       chmod +x gradlew
       ./gradlew assembleDebug
 
