@@ -1,4 +1,3 @@
-
 name: Build MeshChat APK
 
 'on':
@@ -24,60 +23,18 @@ jobs:
       - name: Extract project
         run: unzip -o MeshChat_prototype_android.zip -d extracted
 
-      - name: Set up Gradle
-  name: Build MeshChat APK
-
-'on':
-  workflow_dispatch:
-  push:
-    paths:
-      - "MeshChat_prototype_android.zip"
-      - ".github/workflows/main.yml"
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-
-      - name: Extract project
-        run: unzip -o MeshChat_prototype_android.zip -d extracted
+      - name: Show project files
+        run: |
+          find extracted -type f | head -80
+          echo "=== MANIFEST ==="
+          cat $(find extracted -name AndroidManifest.xml | head -1)
+          echo "=== MAINACTIVITY ==="
+          cat $(find extracted -name 'MainActivity*' | head -1)
+          echo "=== BUILD.GRADLE ==="
+          cat $(find extracted -path '*app/build.gradle.kts' | head -1)
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
-
-      - name: Fix Kotlin target
-        run: |
-          FILE=$(find extracted -path '*/app/build.gradle.kts' -type f | head -n 1)
-          if [ -z "$FILE" ]; then
-            echo "Fichier app/build.gradle.kts introuvable"
-            exit 1
-          fi
-          printf '\n\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions.jvmTarget = "1.8"\n}\n' >> "$FILE"
-
-      - name: Build APK
-        run: |
-          FILE=$(find extracted -name build.gradle.kts -o -name build.gradle | head -n 1)
-          DIR=$(dirname "$FILE")
-          cd "$DIR"
-          gradle assembleDebug
-
-      - name: Upload APK
-        if: success()
-        uses: actions/upload-artifact@v4
-        with:
-          name: MeshChat-APK
-          path: extracted/**/build/outputs/apk/debug/*.apk
-          if-no-files-found: error      uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
 
