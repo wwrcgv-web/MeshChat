@@ -1,3 +1,4 @@
+
 name: Build MeshChat APK
 
 'on':
@@ -20,7 +21,7 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Extract Android project
+      - name: Extract project
         run: unzip -o MeshChat_prototype_android.zip -d extracted
 
       - name: Set up Gradle
@@ -28,15 +29,19 @@ jobs:
         with:
           gradle-version: "8.9"
 
-      - name: Build APK
+      - name: Fix Kotlin target
         run: |
-          ROOT=$(find extracted -name build.gradle.kts -o -name build.gradle | head -n 1)
-          if [ -z "$ROOT" ]; then
-            echo "No Gradle build file found in extracted ZIP"
-            find extracted -maxdepth 4 -type f | head -n 80
+          FILE=$(find extracted -path '*/app/build.gradle.kts' -type f | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "Fichier app/build.gradle.kts introuvable"
             exit 1
           fi
-          DIR=$(dirname "$ROOT")
+          printf '\n\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions.jvmTarget = "1.8"\n}\n' >> "$FILE"
+
+      - name: Build APK
+        run: |
+          FILE=$(find extracted -name build.gradle.kts -o -name build.gradle | head -n 1)
+          DIR=$(dirname "$FILE")
           cd "$DIR"
           gradle assembleDebug
 
