@@ -1,27 +1,47 @@
-name: Build APK
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+name: Build MeshChat APK
+
+'on':
+workflow_dispatch:
+push:
+branches:
+- main
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+build:
+runs-on: ubuntu-latest
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+steps:
+  - name: Checkout repository
+    uses: actions/checkout@v4
 
-      - uses: gradle/actions/setup-gradle@v4
+  - name: Set up Java
+    uses: actions/setup-java@v4
+    with:
+      distribution: temurin
+      java-version: '17'
 
-      - run: chmod +x ./gradlew
+  - name: Extract Android project
+    run: |
+      unzip -o MeshChat_prototype_android.zip -d extracted
 
-      - run: ./gradlew assembleDebug
+  - name: Find project and build APK
+    run: |
+      GRADLE_FILE=$(find extracted -name gradlew -type f | head -n 1)
+      if [ -z "$GRADLE_FILE" ]; then
+        echo "ERREUR: aucun fichier gradlew trouve dans le ZIP."
+        echo "Contenu du ZIP extrait :"
+        find extracted -maxdepth 4 -type f | head -n 80
+        exit 1
+      fi
+      PROJECT_DIR=$(dirname "$GRADLE_FILE")
+      cd "$PROJECT_DIR"
+      chmod +x gradlew
+      ./gradlew assembleDebug
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: app-debug
-          path: app/build/outputs/apk/debug/*.apk
+  - name: Upload APK
+    if: success()
+    uses: actions/upload-artifact@v4
+    with:
+      name: MeshChat-APK
+      path: extracted/**/build/outputs/apk/debug/*.apk
+      if-no-files-found: error
