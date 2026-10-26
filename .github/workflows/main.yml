@@ -1,5 +1,5 @@
 name: Build MeshChat APK
-on:
+'on':
 workflow_dispatch:
 jobs:
 build:
@@ -9,13 +9,13 @@ steps:
 - uses: actions/setup-java@v4
 with:
 distribution: temurin
-java-version: "17"
+java-version: '17'
 - name: Extract project
 run: unzip -o MeshChat_prototype_android.zip -d project
 - name: Build APK
 run: |
 WRAPPER=$(find project -name gradlew -type f | head -n 1)
-if [ -z "$WRAPPER" ]; then echo "Gradle wrapper not found"; exit 1; fi
+test -n "$WRAPPER" || { echo "Gradle wrapper not found"; exit 1; }
 DIR=$(dirname "$WRAPPER")
 cd "$DIR"
 chmod +x gradlew
