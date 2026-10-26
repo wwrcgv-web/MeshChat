@@ -23,9 +23,15 @@ uses: actions/checkout@v4
   - name: Extract project
     run: unzip -o MeshChat_prototype_android.zip -d project
 
-  - name: Build APK
+  - name: Find Gradle wrapper and build
     run: |
-      cd project
+      WRAPPER=$(find project -name gradlew -type f | head -n 1)
+      if [ -z "$WRAPPER" ]; then
+        echo "Gradle wrapper not found"
+        exit 1
+      fi
+      PROJECT_DIR=$(dirname "$WRAPPER")
+      cd "$PROJECT_DIR"
       chmod +x gradlew
       ./gradlew assembleDebug
 
