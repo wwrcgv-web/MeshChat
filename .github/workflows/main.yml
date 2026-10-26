@@ -17,11 +17,13 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      # L'étape 'chmod' n'est pas nécessaire, setup-gradle s'en occupe.
+
       - name: Compiler l'APK
         run: ./gradlew assembleDebug
-        working-directory: ./android  # <--- REMPLACEZ 'android' PAR LE NOM DE VOTRE DOSSIER
+        # working-directory supprimé
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-debug
-          path: android/app/build/outputs/apk/debug/*.apk # <--- REMPLACEZ 'android' ICI AUSSI
+          path: app/build/outputs/apk/debug/*.apk # Chemin corrigé
