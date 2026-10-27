@@ -138,8 +138,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
     var peerCount by remember { mutableStateOf("0") }
     var pseudo by remember { mutableStateOf("anon0000") }
+    var counts by remember { mutableStateOf(mapOf<String, Int>()) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    var showDebug by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
@@ -159,6 +161,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
+
+    // Compte un événement, pour le panneau Debug
+    fun count(key: String) {
+        counts = counts + (key to ((counts[key] ?: 0) + 1))
+    }
+
+    fun c(key: String): Int = counts[key] ?: 0
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
@@ -183,6 +192,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     journal = journal + line
                 }
                 line.startsWith("Reçu de ") -> {
+                    count("in_text")
                     val rest = line.removePrefix("Reçu de ")
                     val author = rest.substringBefore(" : ")
                     val text = rest.substringAfter(" : ", "")
@@ -190,6 +200,30 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 }
                 line.startsWith("Pair trouvé") -> {
                     Regex("""\((\d+) au total\)""").find(line)?.groupValues?.get(1)?.let { peerCount = it }
+                    journal = journal + line
+                }
+                line.startsWith("Fichier reçu") -> {
+                    count("in_file")
+                    journal = journal + line
+                }
+                line.startsWith("Envoyé à") -> {
+                    count("out_ok")
+                    journal = journal + line
+                }
+                line.startsWith("Envoi du fichier") -> {
+                    count("out_file")
+                    journal = journal + line
+                }
+                line.startsWith("Relais vers") -> {
+                    count("relay")
+                    journal = journal + line
+                }
+                line.startsWith("Aucun pair") -> {
+                    count("no_peer")
+                    journal = journal + line
+                }
+                line.contains("chec") -> {
+                    count("fail")
                     journal = journal + line
                 }
                 else -> journal = journal + line
@@ -244,6 +278,41 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             },
             dismissButton = {
                 TextButton(onClick = { showPicker = false; galleryLauncher.launch("image/*") }) { Text("Choisir une image") }
+            }
+        )
+    }
+
+    // Panneau Debug : compteurs des événements
+    if (showDebug) {
+        AlertDialog(
+            onDismissRequest = { showDebug = false },
+            title = { Text("🐞 Outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
+            text = {
+                Column {
+                    Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Pairs vus : $peerCount", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Envois réussis : ${c("out_ok")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Fichiers envoyés : ${c("out_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Relais : ${c("relay")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Sans pair : ${c("no_peer")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Échecs : ${c("fail")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Lecture : « Envois réussis » augmente quand un pair confirme la réception. « Échecs » indique le problème dans le journal.",
+                        color = grey,
+                        fontSize = 12.sp
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDebug = false }) { Text("Fermer") }
+            },
+            dismissButton = {
+                TextButton(onClick = { counts = emptyMap() }) { Text("Remettre à zéro") }
             }
         )
     }
@@ -310,7 +379,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : /@pseudo, mesh, pairs, et ⚙ pour les paramètres
+            // En-tête : /@pseudo, mesh, pairs, 🐞 debug et ⚙ paramètres
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "/@$pseudo",
@@ -323,7 +392,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
                 Text("👥 $peerCount", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = { showDebug = true }) { Text("🐞", fontSize = 16.sp) }
                 TextButton(onClick = { showSettings = true }) { Text("⚙", fontSize = 18.sp) }
             }
 
