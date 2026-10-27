@@ -37,6 +37,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
@@ -94,7 +96,6 @@ private fun CircleButton(label: String, background: Color, textColor: Color, onC
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MeshHome(onStart: () -> Unit) {
     var draft by remember { mutableStateOf("") }
@@ -107,7 +108,6 @@ private fun MeshHome(onStart: () -> Unit) {
     var showSettings by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     var runInBackground by remember { mutableStateOf(true) }
-    val sheetState = rememberModalBottomSheetState()
     val chatState = rememberLazyListState()
     val context = LocalContext.current
 
@@ -215,48 +215,56 @@ private fun MeshHome(onStart: () -> Unit) {
         )
     }
 
-    // Fenêtre Paramètres
+    // Paramètres : panneau à droite de l'écran, options les unes sous les autres
     if (showSettings) {
-        ModalBottomSheet(
+        Dialog(
             onDismissRequest = { showSettings = false },
-            sheetState = sheetState,
-            containerColor = bgColor
+            properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
-                Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(16.dp))
-
-                Text("THÈME", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("système", "clair", "sombre").forEach { option ->
-                        Button(
-                            onClick = { theme = option },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (theme == option) green else lightGrey
-                            )
-                        ) {
-                            Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 13.sp)
+            Row(Modifier.fillMaxSize().background(Color(0x99000000))) {
+                // Zone vide à gauche : un appui la ferme le panneau
+                Box(Modifier.weight(1f).fillMaxHeight().clickable { showSettings = false })
+                Surface(
+                    modifier = Modifier.width(300.dp).fillMaxHeight(),
+                    color = bgColor
+                ) {
+                    Column(Modifier.fillMaxSize().padding(20.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                            TextButton(onClick = { showSettings = false }) { Text("✕", fontSize = 18.sp, color = inkColor) }
                         }
-                    }
-                }
 
-                Spacer(Modifier.height(20.dp))
-                Text("RÉGLAGES", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Column(Modifier.weight(1f)) {
+                        Spacer(Modifier.height(20.dp))
+                        Text("THÈME", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        listOf("système", "clair", "sombre").forEach { option ->
+                            Button(
+                                onClick = { theme = option },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (theme == option) green else lightGrey
+                                )
+                            ) {
+                                Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 14.sp)
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+
+                        Spacer(Modifier.height(16.dp))
+                        Text("RÉGLAGES", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
                         Text("Rester actif en arrière-plan", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         Text("Garde le Bluetooth actif quand l'app est fermée", color = grey, fontSize = 12.sp)
-                    }
-                    Switch(checked = runInBackground, onCheckedChange = { runInBackground = it })
-                }
+                        Spacer(Modifier.height(6.dp))
+                        Switch(checked = runInBackground, onCheckedChange = { runInBackground = it })
 
-                Spacer(Modifier.height(20.dp))
-                Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.height(6.dp))
-                Text("Français (d'autres langues viendront plus tard)", color = inkColor, fontSize = 14.sp)
+                        Spacer(Modifier.height(16.dp))
+                        Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Français", color = inkColor, fontSize = 14.sp)
+                        Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 12.sp)
+                    }
+                }
             }
         }
     }
