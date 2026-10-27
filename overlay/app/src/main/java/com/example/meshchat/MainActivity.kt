@@ -15,6 +15,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -93,6 +94,7 @@ private fun CircleButton(label: String, background: Color, textColor: Color, onC
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MeshHome(onStart: () -> Unit) {
     var draft by remember { mutableStateOf("") }
@@ -102,17 +104,28 @@ private fun MeshHome(onStart: () -> Unit) {
     var peerCount by remember { mutableStateOf("0") }
     var pseudo by remember { mutableStateOf("anon0000") }
     var showPicker by remember { mutableStateOf(false) }
+    var showSettings by remember { mutableStateOf(false) }
+    var theme by remember { mutableStateOf("système") }
+    var runInBackground by remember { mutableStateOf(true) }
+    val sheetState = rememberModalBottomSheetState()
     val chatState = rememberLazyListState()
     val context = LocalContext.current
 
-    val green = Color(0xFF3F7D3F)
-    val blue = Color(0xFF2563EB)
-    val grey = Color(0xFF6B7280)
-    val inkDark = Color(0xFF111827)
-    val mineBg = Color(0xFFDCFCE7)
-    val otherBg = Color(0xFFF1F5F9)
-    val inputBg = Color(0xFFF3F4F6)
-    val lightGrey = Color(0xFFE5E7EB)
+    // Thème : « système » suit le réglage du téléphone
+    val dark = when (theme) {
+        "clair" -> false
+        "sombre" -> true
+        else -> isSystemInDarkTheme()
+    }
+    val green = if (dark) Color(0xFF6EE7A0) else Color(0xFF3F7D3F)
+    val blue = if (dark) Color(0xFF93C5FD) else Color(0xFF2563EB)
+    val grey = Color(0xFF9CA3AF)
+    val bgColor = if (dark) Color(0xFF09090B) else Color.White
+    val inkColor = if (dark) Color.White else Color(0xFF111827)
+    val mineBg = if (dark) Color(0xFF14532D) else Color(0xFFDCFCE7)
+    val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
+    val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
+    val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
@@ -202,12 +215,58 @@ private fun MeshHome(onStart: () -> Unit) {
         )
     }
 
+    // Fenêtre Paramètres
+    if (showSettings) {
+        ModalBottomSheet(
+            onDismissRequest = { showSettings = false },
+            sheetState = sheetState,
+            containerColor = bgColor
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 32.dp)) {
+                Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.height(16.dp))
+
+                Text("THÈME", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("système", "clair", "sombre").forEach { option ->
+                        Button(
+                            onClick = { theme = option },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (theme == option) green else lightGrey
+                            )
+                        ) {
+                            Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 13.sp)
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(20.dp))
+                Text("RÉGLAGES", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Rester actif en arrière-plan", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text("Garde le Bluetooth actif quand l'app est fermée", color = grey, fontSize = 12.sp)
+                    }
+                    Switch(checked = runInBackground, onCheckedChange = { runInBackground = it })
+                }
+
+                Spacer(Modifier.height(20.dp))
+                Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(6.dp))
+                Text("Français (d'autres langues viendront plus tard)", color = inkColor, fontSize = 14.sp)
+            }
+        }
+    }
+
     val canSend = draft.isNotBlank() || pendingPhoto != null
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+    Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : /@pseudo à gauche, mesh et nombre de pairs à droite
+            // En-tête : /@pseudo, mesh, pairs, et ⚙ pour les paramètres
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "/@$pseudo",
@@ -218,8 +277,10 @@ private fun MeshHome(onStart: () -> Unit) {
                     modifier = Modifier.weight(1f)
                 )
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.width(12.dp))
+                Spacer(Modifier.width(10.dp))
                 Text("👥 $peerCount", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.width(4.dp))
+                TextButton(onClick = { showSettings = true }) { Text("⚙", fontSize = 18.sp) }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -248,7 +309,7 @@ private fun MeshHome(onStart: () -> Unit) {
                                 b.image?.let { img ->
                                     Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
                                 }
-                                Text(b.text, color = inkDark, fontSize = 15.sp)
+                                Text(b.text, color = inkColor, fontSize = 15.sp)
                             }
                         }
                     }
@@ -271,13 +332,13 @@ private fun MeshHome(onStart: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Photo prête : appuyez sur ➤", color = inkDark, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text("Photo prête : appuyez sur ➤", color = inkColor, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
                 }
                 Spacer(Modifier.height(4.dp))
             }
 
-            // Barre de saisie arrondie, comme sur la capture
+            // Barre de saisie arrondie
             Surface(
                 shape = RoundedCornerShape(28.dp),
                 color = inputBg,
@@ -301,16 +362,16 @@ private fun MeshHome(onStart: () -> Unit) {
                             unfocusedContainerColor = Color.Transparent,
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = inkDark,
-                            unfocusedTextColor = inkDark
+                            focusedTextColor = inkColor,
+                            unfocusedTextColor = inkColor
                         )
                     )
-                    CircleButton("📷", lightGrey, inkDark) { showPicker = true }
+                    CircleButton("📷", lightGrey, inkColor) { showPicker = true }
                     Spacer(Modifier.width(6.dp))
                     if (canSend) {
                         CircleButton("➤", green, Color.White) { send() }
                     } else {
-                        CircleButton("🎤", lightGrey, inkDark) { journal = journal + "Vocal : pas encore branché" }
+                        CircleButton("🎤", lightGrey, inkColor) { journal = journal + "Vocal : pas encore branché" }
                     }
                 }
             }
