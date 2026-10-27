@@ -21,6 +21,7 @@ class BleMeshManager(private val context: Context) {
     private var scanning = false
     private val peers = ConcurrentHashMap<String, BluetoothDevice>()
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
 
     /** Identifiant fixe de ce téléphone, envoyé dans chaque message. */
@@ -75,7 +76,11 @@ class BleMeshManager(private val context: Context) {
         } catch (e: SecurityException) { emit("Permission serveur manquante") }
     }
 
-    /** Envoie un message texte (200 octets maximum) à tous les pairs trouvés. Retourne le nombre de pairs visés. */
+    /**
+     * Envoie un message texte (200 octets maximum) à tous les pairs trouvés.
+     * S'il n'y a aucun pair, le message est mis en attente et sera envoyé dès qu'un pair apparaît.
+     * Retourne le nombre de pairs visés, ou 1 si le message est en attente (accepté).
+     */
     fun sendMessage(text: String): Int {
         if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
             emit("Message trop long (200 caractères maximum)")
@@ -83,9 +88,13 @@ class BleMeshManager(private val context: Context) {
         }
         val packet = MeshPacket.newMessage(myId, text)
         seenIds.add(packet.id)
-        val data = packet.encode()
         val targets = peers.values.toList()
-        if (targets.isEmpty()) { emit("Aucun pair trouvé : message non envoyé"); return 0 }
+        if (targets.isEmpty()) {
+            queue.add(packet)
+            emit("Aucun pair : message mis en attente (10 min)")
+            return 1
+        }
+        val data = packet.encode()
         targets.forEach { sendTo(it, data) }
         return targets.size
     }
@@ -121,9 +130,20 @@ class BleMeshManager(private val context: Context) {
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val dev = result?.device ?: return
-            if (peers.put(dev.address, dev) == null) emit("Pair trouvé : ${dev.address} (${peers.size} au total)")
+            if (peers.put(dev.address, dev) == null) {
+                emit("Pair trouvé : ${dev.address} (${peers.size} au total)")
+                sendQueuedTo(dev)
+            }
         }
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
+    }
+
+    /** Envoie au nouveau pair les messages qui attendaient. */
+    private fun sendQueuedTo(device: BluetoothDevice) {
+        val pending = queue.drain()
+        if (pending.isEmpty()) return
+        emit("Envoi de ${pending.size} message(s) en attente")
+        pending.forEach { sendTo(device, it.encode()) }
     }
 
     private val gattCallback = object : BluetoothGattServerCallback() {
