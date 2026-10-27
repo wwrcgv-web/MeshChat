@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -22,6 +23,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -51,10 +53,10 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Une bulle de conversation : texte, image, reçue (mine = false) ou envoyée par moi (mine = true). */
+/** Une bulle de conversation : texte ou image, reçue (mine = false) ou envoyée par moi (mine = true). */
 private data class Bubble(val mine: Boolean, val author: String, val text: String, val image: Bitmap? = null)
 
-/** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth (quelques dizaines de Ko). */
+/** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth. */
 private fun compressPhoto(source: Bitmap): ByteArray {
     val scale = 240f / maxOf(source.width, source.height)
     val small = if (scale < 1f) {
@@ -71,21 +73,37 @@ private fun MeshHome(onStart: () -> Unit) {
     var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
     var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
     var peerCount by remember { mutableStateOf("0") }
+    var showPicker by remember { mutableStateOf(false) }
     val chatState = rememberLazyListState()
+    val context = LocalContext.current
     val green = Color(0xFF22C55E)
     val bubbleMine = Color(0xFF166534)
     val bubbleOther = Color(0xFF1F2937)
 
-    // Ouvre l'appareil photo : aucune permission CAMERA nécessaire, Android passe par l'application Appareil photo
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
-        if (bitmap == null) return@rememberLauncherForActivityResult
-        val manager = BleMeshManager.instance
-        if (manager == null) {
-            journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
-            return@rememberLauncherForActivityResult
+    /** Envoie une image choisie ou prise en photo, puis l'affiche dans la conversation. */
+    val onPhoto: (Bitmap?) -> Unit = { bitmap ->
+        if (bitmap != null) {
+            val manager = BleMeshManager.instance
+            if (manager == null) {
+                journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
+            } else {
+                val sent = manager.sendBlob(compressPhoto(bitmap))
+                if (sent > 0) bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", bitmap)
+            }
         }
-        val sent = manager.sendBlob(compressPhoto(bitmap))
-        if (sent > 0) bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", bitmap)
+    }
+
+    // Appareil photo
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap -> onPhoto(bitmap) }
+
+    // Galerie : choisir une image existante
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val bitmap = uri?.let {
+            context.contentResolver.openInputStream(it)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply { inSampleSize = 4 })
+            }
+        }
+        onPhoto(bitmap)
     }
 
     DisposableEffect(Unit) {
@@ -109,6 +127,21 @@ private fun MeshHome(onStart: () -> Unit) {
 
     LaunchedEffect(bubbles.size) {
         if (bubbles.isNotEmpty()) chatState.animateScrollToItem(bubbles.size - 1)
+    }
+
+    // Choix : prendre une photo ou choisir une image
+    if (showPicker) {
+        AlertDialog(
+            onDismissRequest = { showPicker = false },
+            title = { Text("Ajouter une photo") },
+            text = { Text("Que voulez-vous faire ?") },
+            confirmButton = {
+                TextButton(onClick = { showPicker = false; cameraLauncher.launch(null) }) { Text("Prendre une photo") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showPicker = false; galleryLauncher.launch("image/*") }) { Text("Choisir une image") }
+            }
+        )
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090B)) {
@@ -164,7 +197,7 @@ private fun MeshHome(onStart: () -> Unit) {
                     )
                 )
                 Spacer(Modifier.width(6.dp))
-                Button(onClick = { cameraLauncher.launch(null) }, colors = ButtonDefaults.buttonColors(containerColor = bubbleOther)) { Text("📷") }
+                Button(onClick = { showPicker = true }, colors = ButtonDefaults.buttonColors(containerColor = bubbleOther)) { Text("📷") }
                 Spacer(Modifier.width(6.dp))
                 Button(onClick = { journal = journal + "Vocal : pas encore branché" }, colors = ButtonDefaults.buttonColors(containerColor = bubbleOther)) { Text("🎤") }
                 Spacer(Modifier.width(6.dp))
