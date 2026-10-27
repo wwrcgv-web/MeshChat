@@ -19,6 +19,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -45,6 +46,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
+import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 import java.io.ByteArrayOutputStream
 
@@ -104,8 +106,24 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** Une bulle de conversation : texte ou image, reçue (mine = false) ou envoyée par moi (mine = true). */
-private data class Bubble(val mine: Boolean, val author: String, val text: String, val image: Bitmap? = null)
+/** Identifiant de la conversation « Tous ». */
+private const val PUBLIC = "public"
+
+/**
+ * Une bulle de conversation.
+ * chat = PUBLIC pour la conversation générale, ou l'identifiant complet du téléphone pour une discussion privée.
+ */
+private data class Bubble(
+    val mine: Boolean,
+    val author: String,
+    val text: String,
+    val image: Bitmap? = null,
+    val chat: String
+)
+
+/** Titre affiché au-dessus d'une bulle. */
+private fun bubbleTitle(b: Bubble): String =
+    if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${pseudoFrom(b.author.take(8))}"
 
 /** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth. */
 private fun compressPhoto(source: Bitmap): ByteArray {
@@ -131,14 +149,10 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
         val w = size.width
         val h = size.height
         val stroke = w * 0.09f
-        // Corps
         drawOval(color, topLeft = Offset(w * 0.25f, h * 0.30f), size = Size(w * 0.5f, h * 0.64f))
-        // Tête
         drawCircle(color, radius = w * 0.16f, center = Offset(w * 0.5f, h * 0.24f))
-        // Antennes
         drawLine(color, Offset(w * 0.44f, h * 0.12f), Offset(w * 0.32f, h * 0.01f), strokeWidth = stroke)
         drawLine(color, Offset(w * 0.56f, h * 0.12f), Offset(w * 0.68f, h * 0.01f), strokeWidth = stroke)
-        // Pattes (3 de chaque côté)
         for (i in 0..2) {
             val y = h * (0.40f + i * 0.18f)
             drawLine(color, Offset(w * 0.25f, y), Offset(w * 0.03f, y + h * 0.08f), strokeWidth = stroke)
@@ -157,13 +171,28 @@ private fun CircleButton(label: String, background: Color, textColor: Color, onC
     }
 }
 
+/** Bouton de choix de conversation (Tous, ou un téléphone). */
+@Composable
+private fun ChatChip(label: String, selected: Boolean, green: Color, inkColor: Color, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = if (selected) green else inkColor.copy(alpha = 0.12f)
+        ),
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+    ) {
+        Text(label, color = if (selected) Color.White else inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+    }
+}
+
 @Composable
 private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
     var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
-    var peerCount by remember { mutableStateOf("0") }
+    var peers by remember { mutableStateOf(listOf<MeshPeer>()) }
+    var selectedChat by remember { mutableStateOf(PUBLIC) }
     var pseudo by remember { mutableStateOf("anon0000") }
     var counts by remember { mutableStateOf(mapOf<String, Int>()) }
     var showPicker by remember { mutableStateOf(false) }
@@ -219,17 +248,21 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     pseudo = pseudoFrom(line.removePrefix("Mon identifiant : ").trim())
                     journal = journal + line
                 }
+                line.startsWith("Reçu privé de ") -> {
+                    count("in_text")
+                    val rest = line.removePrefix("Reçu privé de ")
+                    val sender = rest.substringBefore(" : ")
+                    val text = rest.substringAfter(" : ", "")
+                    bubbles = bubbles + Bubble(false, sender, text, null, sender)
+                }
                 line.startsWith("Reçu de ") -> {
                     count("in_text")
                     val rest = line.removePrefix("Reçu de ")
-                    val author = rest.substringBefore(" : ")
+                    val sender = rest.substringBefore(" : ")
                     val text = rest.substringAfter(" : ", "")
-                    bubbles = bubbles + Bubble(false, author, text)
+                    bubbles = bubbles + Bubble(false, sender, text, null, PUBLIC)
                 }
-                line.startsWith("Pair trouvé") -> {
-                    Regex("""\((\d+) au total\)""").find(line)?.groupValues?.get(1)?.let { peerCount = it }
-                    journal = journal + line
-                }
+                line.startsWith("Pair trouvé") -> journal = journal + line
                 line.startsWith("Fichier reçu") -> {
                     count("in_file")
                     journal = journal + line
@@ -257,23 +290,33 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 else -> journal = journal + line
             }
         }
-        // Fichier complet reçu : on le décode et on l'affiche comme une photo reçue
+        // Liste des téléphones identifiés, mise à jour par le Bluetooth
+        BleMeshManager.peersListener = { list ->
+            peers = list
+            // Si la discussion choisie n'est plus à portée, on revient à « Tous »
+            if (selectedChat != PUBLIC && list.none { it.id == selectedChat }) selectedChat = PUBLIC
+        }
+        // Fichier complet reçu : on le décode et on l'affiche comme une photo reçue dans « Tous »
         BleMeshManager.blobListener = { bytes ->
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { photo ->
-                bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo)
+                bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
             }
         }
         onDispose {
             BleMeshManager.listener = null
+            BleMeshManager.peersListener = null
             BleMeshManager.blobListener = null
         }
     }
 
-    LaunchedEffect(bubbles.size) {
-        if (bubbles.isNotEmpty()) chatState.animateScrollToItem(bubbles.size - 1)
+    // Messages de la conversation choisie
+    val visible = bubbles.filter { it.chat == selectedChat }
+
+    LaunchedEffect(visible.size) {
+        if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    /** Envoie le texte et/ou la photo en aperçu. */
+    /** Envoie le texte (au téléphone choisi, ou à tous) et/ou la photo en aperçu. */
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
@@ -281,16 +324,18 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             return
         }
         if (draft.isNotBlank()) {
-            val sent = manager.sendMessage(draft)
+            val target = if (selectedChat == PUBLIC) null else selectedChat
+            val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", draft)
+                bubbles = bubbles + Bubble(true, "moi", draft, null, selectedChat)
                 draft = ""
             }
         }
+        // Les photos vont à tous pour l'instant
         pendingPhoto?.let { photo ->
             val sent = manager.sendBlob(compressPhoto(photo))
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo)
+                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, PUBLIC)
                 pendingPhoto = null
             }
         }
@@ -300,7 +345,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
             title = { Text("Ajouter une photo") },
-            text = { Text("Que voulez-vous faire ?") },
+            text = { Text("Que voulez-vous faire ? (la photo est envoyée à tous)") },
             confirmButton = {
                 TextButton(onClick = { showPicker = false; cameraLauncher.launch(null) }) { Text("Prendre une photo") }
             },
@@ -324,7 +369,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             text = {
                 Column {
                     Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Pairs vus : $peerCount", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -444,7 +489,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 )
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
-                Text("👥 $peerCount", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text("👥 ${peers.size}", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 TextButton(onClick = { showSettings = true }) { Text("⚙", fontSize = 18.sp) }
             }
 
@@ -477,21 +522,36 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
 
             Spacer(Modifier.height(8.dp))
 
-            // Conversation
+            // Choix de la conversation : Tous, puis chaque téléphone trouvé
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                item {
+                    ChatChip("Tous", selectedChat == PUBLIC, green, inkColor) { selectedChat = PUBLIC }
+                }
+                items(peers) { p ->
+                    ChatChip("@${pseudoFrom(p.id.take(8))}", selectedChat == p.id, green, inkColor) { selectedChat = p.id }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // Titre de la conversation affichée
+            Text(
+                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${pseudoFrom(selectedChat.take(8))}",
+                color = grey,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace
+            )
+
+            // Conversation (seulement les messages de la discussion choisie)
             LazyColumn(state = chatState, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                items(bubbles) { b ->
+                items(visible) { b ->
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
                     ) {
                         Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.padding(10.dp)) {
-                                Text(
-                                    if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${b.author}",
-                                    color = green,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 b.image?.let { img ->
                                     Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
                                 }
