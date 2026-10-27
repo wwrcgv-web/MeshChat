@@ -11,6 +11,12 @@ import android.util.Log
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
+/** Un téléphone trouvé, identifié par son identifiant MeshChat (16 caractères hexadécimaux). */
+data class MeshPeer(val id: String)
+
+private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+
 @SuppressLint("MissingPermission")
 class BleMeshManager(private val context: Context) {
     private val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
@@ -19,13 +25,14 @@ class BleMeshManager(private val context: Context) {
     private var server: BluetoothGattServer? = null
     private var advertising = false
     private var scanning = false
-    private val peers = ConcurrentHashMap<String, BluetoothDevice>()
+    private val peers = ConcurrentHashMap<String, BluetoothDevice>()   // adresse Bluetooth -> appareil
+    private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
 
-    /** Identifiant fixe de ce téléphone, envoyé dans chaque message. */
+    /** Identifiant fixe de ce téléphone, envoyé dans chaque message et dans la réponse au scan. */
     val myId: ByteArray = MeshPacket.newPeerId()
 
     init { instance = this }
@@ -35,18 +42,23 @@ class BleMeshManager(private val context: Context) {
         main.post { listener?.invoke(msg) }
     }
 
-    private fun shortId(bytes: ByteArray): String =
-        bytes.take(4).joinToString("") { "%02x".format(it) }
+    /** Publie à l'écran la liste des téléphones identifiés. */
+    private fun publishPeers() {
+        val list = peerIds.values.distinct().sorted().map { MeshPeer(it) }
+        main.post { peersListener?.invoke(list) }
+    }
 
     fun startAdvertising() {
-        emit("Mon identifiant : ${shortId(myId)}")
+        emit("Mon identifiant : ${myId.toHex().take(8)}")
         val advertiser = adapter?.bluetoothLeAdvertiser ?: run { emit("Annonce Bluetooth indisponible"); return }
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(true).setTimeout(0)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).build()
         val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(serviceUuid)).setIncludeDeviceName(false).build()
-        try { advertiser.startAdvertising(settings, data, callback) } catch (e: SecurityException) { emit("Permission Bluetooth manquante") }
+        // L'identifiant voyage dans la « réponse au scan » : les autres téléphones le lisent en cherchant
+        val response = AdvertiseData.Builder().addManufacturerData(COMPANY_ID, myId).setIncludeDeviceName(false).build()
+        try { advertiser.startAdvertising(settings, data, response, callback) } catch (e: SecurityException) { emit("Permission Bluetooth manquante") }
         startScan()
     }
 
@@ -78,20 +90,18 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Envoie un message texte (200 octets maximum) à tous les pairs trouvés.
-     * Si la commande est « /fichier », envoie un fichier test de 1000 octets.
-     * S'il n'y a aucun pair, le message est mis en attente.
+     * Envoie un message texte (200 octets maximum).
+     * [toPeerId] : identifiant du destinataire, ou null pour tout le monde.
+     * Les téléphones intermédiaires relaient le message sans l'afficher, sauf pour le destinataire.
+     * Retourne le nombre de pairs visés, ou 1 si le message est mis en attente.
      */
-    fun sendMessage(text: String): Int {
-        if (text.trim() == "/fichier") {
-            sendBlob(ByteArray(1000) { (it % 256).toByte() })
-            return 1
-        }
+    fun sendMessage(text: String, toPeerId: String? = null): Int {
         if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
             emit("Message trop long (200 caractères maximum)")
             return 0
         }
-        val packet = MeshPacket.newMessage(myId, text)
+        val recipient = toPeerId?.hexToBytes() ?: ByteArray(MeshPacket.ID_SIZE)
+        val packet = MeshPacket(UUID.randomUUID(), myId, recipient, MeshPacket.DEFAULT_TTL, text)
         seenIds.add(packet.id)
         val targets = peers.values.toList()
         if (targets.isEmpty()) {
@@ -171,10 +181,24 @@ class BleMeshManager(private val context: Context) {
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
-            val dev = result?.device ?: return
-            if (peers.put(dev.address, dev) == null) {
-                emit("Pair trouvé : ${dev.address} (${peers.size} au total)")
-                sendQueuedTo(dev)
+            val r = result ?: return
+            val mac = r.device.address
+            val isNewDevice = peers.put(mac, r.device) == null
+            val idBytes = r.scanRecord?.getManufacturerSpecificData(COMPANY_ID)
+            if (idBytes != null && idBytes.size == MeshPacket.ID_SIZE) {
+                val id = idBytes.toHex()
+                if (peerIds.put(mac, id) == null) {
+                    // Un même téléphone peut changer d'adresse Bluetooth : on retire les anciennes adresses
+                    peerIds.filter { it.value == id && it.key != mac }.keys.toList().forEach {
+                        peers.remove(it)
+                        peerIds.remove(it)
+                    }
+                    emit("Pair trouvé : ${id.take(8)}")
+                    publishPeers()
+                    sendQueuedTo(r.device)
+                }
+            } else if (isNewDevice) {
+                Log.i(TAG, "Appareil sans identifiant : $mac")
             }
         }
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
@@ -208,12 +232,20 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
+    /**
+     * Message reçu : affiché seulement s'il est pour tout le monde ou pour nous.
+     * Format de la ligne : « Reçu de <expéditeur> : texte » (public) ou « Reçu privé de <expéditeur> : texte ».
+     */
     private fun handleText(fromAddress: String, body: ByteArray) {
         val packet = MeshPacket.decode(body)
         if (packet == null) { emit("Message reçu mal formé"); return }
         if (!seenIds.add(packet.id)) return
-        val forMe = packet.recipient.all { it == 0.toByte() } || packet.recipient.contentEquals(myId)
-        if (forMe) emit("Reçu de ${shortId(packet.sender)} : ${packet.text}")
+        val isPublic = packet.recipient.all { it == 0.toByte() }
+        val forMe = isPublic || packet.recipient.contentEquals(myId)
+        if (forMe) {
+            val tag = if (isPublic) "Reçu de" else "Reçu privé de"
+            emit("$tag ${packet.sender.toHex()} : ${packet.text}")
+        }
         if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
     }
 
@@ -252,7 +284,9 @@ class BleMeshManager(private val context: Context) {
         try { server?.close() } catch (e: SecurityException) { Log.w(TAG, "Fermeture serveur impossible", e) }
         scanning = false; advertising = false; server = null
         peers.clear()
+        peerIds.clear()
         assemblies.clear()
+        publishPeers()
         instance = null
     }
 
@@ -261,10 +295,14 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_TEXT_BYTES = 200
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
+        /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
+        const val COMPANY_ID = 0xFFFE
         @Volatile var instance: BleMeshManager? = null
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
         /** L'écran branche ici une fonction pour recevoir un fichier complet (octets de l'image). */
         @Volatile var blobListener: ((ByteArray) -> Unit)? = null
+        /** L'écran branche ici une fonction pour recevoir la liste des téléphones identifiés. */
+        @Volatile var peersListener: ((List<MeshPeer>) -> Unit)? = null
     }
 }
