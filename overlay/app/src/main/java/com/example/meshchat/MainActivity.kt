@@ -70,6 +70,7 @@ private fun compressPhoto(source: Bitmap): ByteArray {
 @Composable
 private fun MeshHome(onStart: () -> Unit) {
     var draft by remember { mutableStateOf("") }
+    var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
     var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
     var peerCount by remember { mutableStateOf("0") }
@@ -80,30 +81,19 @@ private fun MeshHome(onStart: () -> Unit) {
     val bubbleMine = Color(0xFF166534)
     val bubbleOther = Color(0xFF1F2937)
 
-    /** Envoie une image choisie ou prise en photo, puis l'affiche dans la conversation. */
-    val onPhoto: (Bitmap?) -> Unit = { bitmap ->
-        if (bitmap != null) {
-            val manager = BleMeshManager.instance
-            if (manager == null) {
-                journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
-            } else {
-                val sent = manager.sendBlob(compressPhoto(bitmap))
-                if (sent > 0) bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", bitmap)
-            }
-        }
+    // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
+        if (bitmap != null) pendingPhoto = bitmap
     }
 
-    // Appareil photo
-    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap -> onPhoto(bitmap) }
-
-    // Galerie : choisir une image existante
+    // Galerie : l'image choisie devient l'aperçu
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val bitmap = uri?.let {
             context.contentResolver.openInputStream(it)?.use { stream ->
                 BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply { inSampleSize = 4 })
             }
         }
-        onPhoto(bitmap)
+        if (bitmap != null) pendingPhoto = bitmap
     }
 
     DisposableEffect(Unit) {
@@ -129,7 +119,6 @@ private fun MeshHome(onStart: () -> Unit) {
         if (bubbles.isNotEmpty()) chatState.animateScrollToItem(bubbles.size - 1)
     }
 
-    // Choix : prendre une photo ou choisir une image
     if (showPicker) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
@@ -182,6 +171,17 @@ private fun MeshHome(onStart: () -> Unit) {
 
             Spacer(Modifier.height(6.dp))
 
+            // Aperçu de la photo choisie, avant envoi
+            pendingPhoto?.let { photo ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Photo prête : appuyez sur ENVOYER", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 OutlinedTextField(
                     value = draft,
@@ -203,16 +203,23 @@ private fun MeshHome(onStart: () -> Unit) {
                 Spacer(Modifier.width(6.dp))
                 Button(
                     onClick = {
+                        val manager = BleMeshManager.instance
+                        if (manager == null) {
+                            journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
+                            return@Button
+                        }
                         if (draft.isNotBlank()) {
-                            val manager = BleMeshManager.instance
-                            if (manager == null) {
-                                journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
-                            } else {
-                                val sent = manager.sendMessage(draft)
-                                if (sent > 0) {
-                                    bubbles = bubbles + Bubble(true, "moi", draft)
-                                    draft = ""
-                                }
+                            val sent = manager.sendMessage(draft)
+                            if (sent > 0) {
+                                bubbles = bubbles + Bubble(true, "moi", draft)
+                                draft = ""
+                            }
+                        }
+                        pendingPhoto?.let { photo ->
+                            val sent = manager.sendBlob(compressPhoto(photo))
+                            if (sent > 0) {
+                                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo)
+                                pendingPhoto = null
                             }
                         }
                     },
