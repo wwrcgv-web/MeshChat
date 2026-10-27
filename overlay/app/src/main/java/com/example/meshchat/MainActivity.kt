@@ -11,21 +11,29 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -69,10 +77,20 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     return out.toByteArray()
 }
 
-/** Pseudo lisible à partir de l'identifiant Bluetooth, par exemple anon9352. */
+/** Pseudo lisible à partir de l'identifiant Bluetooth, par exemple anon1053. */
 private fun pseudoFrom(shortId: String): String {
     val number = (shortId.toLongOrNull(16) ?: 0L) % 10000L
     return "anon" + number.toString().padStart(4, '0')
+}
+
+@Composable
+private fun CircleButton(label: String, background: Color, textColor: Color, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier.size(44.dp).clip(CircleShape).background(background).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(label, color = textColor, fontSize = 18.sp)
+    }
 }
 
 @Composable
@@ -86,11 +104,15 @@ private fun MeshHome(onStart: () -> Unit) {
     var showPicker by remember { mutableStateOf(false) }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
-    val green = Color(0xFF22C55E)
-    val lime = Color(0xFFA3E635)
-    val blue = Color(0xFF3B82F6)
-    val bubbleMine = Color(0xFF166534)
-    val bubbleOther = Color(0xFF1F2937)
+
+    val green = Color(0xFF3F7D3F)
+    val blue = Color(0xFF2563EB)
+    val grey = Color(0xFF6B7280)
+    val inkDark = Color(0xFF111827)
+    val mineBg = Color(0xFFDCFCE7)
+    val otherBg = Color(0xFFF1F5F9)
+    val inputBg = Color(0xFFF3F4F6)
+    val lightGrey = Color(0xFFE5E7EB)
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
@@ -143,6 +165,29 @@ private fun MeshHome(onStart: () -> Unit) {
         if (bubbles.isNotEmpty()) chatState.animateScrollToItem(bubbles.size - 1)
     }
 
+    /** Envoie le texte et/ou la photo en aperçu. */
+    fun send() {
+        val manager = BleMeshManager.instance
+        if (manager == null) {
+            journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
+            return
+        }
+        if (draft.isNotBlank()) {
+            val sent = manager.sendMessage(draft)
+            if (sent > 0) {
+                bubbles = bubbles + Bubble(true, "moi", draft)
+                draft = ""
+            }
+        }
+        pendingPhoto?.let { photo ->
+            val sent = manager.sendBlob(compressPhoto(photo))
+            if (sent > 0) {
+                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo)
+                pendingPhoto = null
+            }
+        }
+    }
+
     if (showPicker) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
@@ -157,46 +202,67 @@ private fun MeshHome(onStart: () -> Unit) {
         )
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090B)) {
-        Column(Modifier.fillMaxSize().padding(12.dp)) {
+    val canSend = draft.isNotBlank() || pendingPhoto != null
+
+    Surface(modifier = Modifier.fillMaxSize(), color = Color.White) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+
             // En-tête : /@pseudo à gauche, mesh et nombre de pairs à droite
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text("/@$pseudo", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                Text(
+                    "/@$pseudo",
+                    color = green,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.weight(1f)
+                )
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(12.dp))
-                Text("👥 $peerCount", color = Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Text("👥 $peerCount", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             }
+
             Spacer(Modifier.height(8.dp))
-            Button(onClick = onStart, colors = ButtonDefaults.buttonColors(containerColor = green), modifier = Modifier.fillMaxWidth()) {
-                Text("ACTIVER LE SERVICE", color = Color.Black)
-            }
+            Button(
+                onClick = onStart,
+                colors = ButtonDefaults.buttonColors(containerColor = green),
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("ACTIVER LE SERVICE", color = Color.White, fontSize = 13.sp) }
             Spacer(Modifier.height(8.dp))
 
+            // Conversation
             LazyColumn(state = chatState, modifier = Modifier.weight(1f).fillMaxWidth()) {
                 items(bubbles) { b ->
                     Box(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                         contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
                     ) {
-                        Surface(color = if (b.mine) bubbleMine else bubbleOther, shape = RoundedCornerShape(12.dp)) {
+                        Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
                             Column(Modifier.padding(10.dp)) {
-                                Text(if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${b.author}", color = green, fontSize = 11.sp)
+                                Text(
+                                    if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${b.author}",
+                                    color = green,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                                 b.image?.let { img ->
-                                    Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(180.dp))
+                                    Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
                                 }
-                                Text(b.text, color = Color.White, fontSize = 15.sp)
+                                Text(b.text, color = inkDark, fontSize = 15.sp)
                             }
                         }
                     }
                 }
             }
 
-            Text("JOURNAL", color = green, fontSize = 12.sp)
-            LazyColumn(Modifier.height(90.dp).fillMaxWidth()) {
-                items(journal.takeLast(30)) { line ->
-                    Text("> $line", color = lime, fontSize = 11.sp)
-                }
-            }
+            // Journal réduit : les 3 dernières lignes, en petit
+            Text(
+                journal.takeLast(3).joinToString("\n") { "> $it" },
+                color = grey,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 3
+            )
 
             Spacer(Modifier.height(6.dp))
 
@@ -205,55 +271,48 @@ private fun MeshHome(onStart: () -> Unit) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                     Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Photo prête : appuyez sur ENVOYER", color = Color.White, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    Text("Photo prête : appuyez sur ➤", color = inkDark, fontSize = 12.sp, modifier = Modifier.weight(1f))
                     TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
                 }
                 Spacer(Modifier.height(4.dp))
             }
 
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = { draft = it },
-                    modifier = Modifier.weight(1f),
-                    placeholder = { Text("Écrire un message…") },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = green,
-                        unfocusedBorderColor = green.copy(alpha = .5f)
+            // Barre de saisie arrondie, comme sur la capture
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = inputBg,
+                border = BorderStroke(1.dp, Color(0xFFD1D5DB)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                ) {
+                    TextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("écrire un message…", color = grey) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { send() }),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTextColor = inkDark,
+                            unfocusedTextColor = inkDark
+                        )
                     )
-                )
-                Spacer(Modifier.width(6.dp))
-                Button(onClick = { showPicker = true }, colors = ButtonDefaults.buttonColors(containerColor = bubbleOther)) { Text("📷") }
-                Spacer(Modifier.width(6.dp))
-                Button(onClick = { journal = journal + "Vocal : pas encore branché" }, colors = ButtonDefaults.buttonColors(containerColor = bubbleOther)) { Text("🎤") }
-                Spacer(Modifier.width(6.dp))
-                Button(
-                    onClick = {
-                        val manager = BleMeshManager.instance
-                        if (manager == null) {
-                            journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
-                            return@Button
-                        }
-                        if (draft.isNotBlank()) {
-                            val sent = manager.sendMessage(draft)
-                            if (sent > 0) {
-                                bubbles = bubbles + Bubble(true, "moi", draft)
-                                draft = ""
-                            }
-                        }
-                        pendingPhoto?.let { photo ->
-                            val sent = manager.sendBlob(compressPhoto(photo))
-                            if (sent > 0) {
-                                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo)
-                                pendingPhoto = null
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = bubbleMine)
-                ) { Text("ENVOYER") }
+                    CircleButton("📷", lightGrey, inkDark) { showPicker = true }
+                    Spacer(Modifier.width(6.dp))
+                    if (canSend) {
+                        CircleButton("➤", green, Color.White) { send() }
+                    } else {
+                        CircleButton("🎤", lightGrey, inkDark) { journal = journal + "Vocal : pas encore branché" }
+                    }
+                }
             }
         }
     }
