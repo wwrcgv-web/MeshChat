@@ -51,8 +51,9 @@ object AppState {
 }
 
 class MainActivity : ComponentActivity() {
-    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.all { it }) startMeshService()
+    private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+        // Le service démarre même si les notifications sont refusées : elles ne servent qu'à l'affichage
+        startMeshService()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -72,10 +73,20 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun askPermissions() {
-        val needed = if (Build.VERSION.SDK_INT >= 31) arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
-            else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (needed.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) startMeshService()
-        else permissions.launch(needed)
+        val needed = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 31) {
+            needed += listOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            needed += Manifest.permission.ACCESS_FINE_LOCATION
+        }
+        // Notifications : obligatoires à partir d'Android 13 pour afficher la notification du service
+        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+
+        if (needed.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
+            startMeshService()
+        } else {
+            permissions.launch(needed.toTypedArray())
+        }
     }
 
     private fun startMeshService() {
