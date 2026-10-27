@@ -24,6 +24,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -67,6 +69,12 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     return out.toByteArray()
 }
 
+/** Pseudo lisible à partir de l'identifiant Bluetooth, par exemple anon9352. */
+private fun pseudoFrom(shortId: String): String {
+    val number = (shortId.toLongOrNull(16) ?: 0L) % 10000L
+    return "anon" + number.toString().padStart(4, '0')
+}
+
 @Composable
 private fun MeshHome(onStart: () -> Unit) {
     var draft by remember { mutableStateOf("") }
@@ -74,10 +82,13 @@ private fun MeshHome(onStart: () -> Unit) {
     var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
     var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
     var peerCount by remember { mutableStateOf("0") }
+    var pseudo by remember { mutableStateOf("anon0000") }
     var showPicker by remember { mutableStateOf(false) }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val green = Color(0xFF22C55E)
+    val lime = Color(0xFFA3E635)
+    val blue = Color(0xFF3B82F6)
     val bubbleMine = Color(0xFF166534)
     val bubbleOther = Color(0xFF1F2937)
 
@@ -99,6 +110,10 @@ private fun MeshHome(onStart: () -> Unit) {
     DisposableEffect(Unit) {
         BleMeshManager.listener = { line ->
             when {
+                line.startsWith("Mon identifiant : ") -> {
+                    pseudo = pseudoFrom(line.removePrefix("Mon identifiant : ").trim())
+                    journal = journal + line
+                }
                 line.startsWith("Reçu de ") -> {
                     val rest = line.removePrefix("Reçu de ")
                     val author = rest.substringBefore(" : ")
@@ -144,8 +159,13 @@ private fun MeshHome(onStart: () -> Unit) {
 
     Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFF09090B)) {
         Column(Modifier.fillMaxSize().padding(12.dp)) {
-            Text("[ MESHCHAT // HORS-RÉSEAU ]", color = green, fontSize = 17.sp)
-            Text("Pairs vus : $peerCount", color = Color(0xFFA3E635), fontSize = 12.sp)
+            // En-tête : /@pseudo à gauche, mesh et nombre de pairs à droite
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text("/@$pseudo", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                Spacer(Modifier.width(12.dp))
+                Text("👥 $peerCount", color = Color.Gray, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            }
             Spacer(Modifier.height(8.dp))
             Button(onClick = onStart, colors = ButtonDefaults.buttonColors(containerColor = green), modifier = Modifier.fillMaxWidth()) {
                 Text("ACTIVER LE SERVICE", color = Color.Black)
@@ -174,7 +194,7 @@ private fun MeshHome(onStart: () -> Unit) {
             Text("JOURNAL", color = green, fontSize = 12.sp)
             LazyColumn(Modifier.height(90.dp).fillMaxWidth()) {
                 items(journal.takeLast(30)) { line ->
-                    Text("> $line", color = Color(0xFFA3E635), fontSize = 11.sp)
+                    Text("> $line", color = lime, fontSize = 11.sp)
                 }
             }
 
