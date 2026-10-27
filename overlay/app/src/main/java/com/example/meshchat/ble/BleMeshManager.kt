@@ -21,6 +21,7 @@ class BleMeshManager(private val context: Context) {
     private var scanning = false
     private val peers = ConcurrentHashMap<String, BluetoothDevice>()
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
 
@@ -78,10 +79,14 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Envoie un message texte (200 octets maximum) à tous les pairs trouvés.
-     * S'il n'y a aucun pair, le message est mis en attente et sera envoyé dès qu'un pair apparaît.
-     * Retourne le nombre de pairs visés, ou 1 si le message est en attente (accepté).
+     * Si la commande est « /fichier », envoie un fichier test de 1000 octets.
+     * S'il n'y a aucun pair, le message est mis en attente.
      */
     fun sendMessage(text: String): Int {
+        if (text.trim() == "/fichier") {
+            sendBlob(ByteArray(1000) { (it % 256).toByte() })
+            return 1
+        }
         if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
             emit("Message trop long (200 caractères maximum)")
             return 0
@@ -94,12 +99,30 @@ class BleMeshManager(private val context: Context) {
             emit("Aucun pair : message mis en attente (10 min)")
             return 1
         }
-        val data = packet.encode()
-        targets.forEach { sendTo(it, data) }
+        val frame = textFrame(packet)
+        targets.forEach { sendTo(it, frame) }
         return targets.size
     }
 
-    private fun sendTo(device: BluetoothDevice, data: ByteArray) {
+    /** Envoie un contenu binaire (image, vocal...) découpé en fragments à tous les pairs. */
+    fun sendBlob(bytes: ByteArray): Int {
+        val targets = peers.values.toList()
+        if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
+        val fragments = MeshChunker.split(MeshChunker.newContentId(), bytes)
+        val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT) + it }
+        emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
+        targets.forEach { sendFramesTo(it, frames) }
+        return targets.size
+    }
+
+    private fun textFrame(packet: MeshPacket): ByteArray = byteArrayOf(TYPE_TEXT) + packet.encode()
+
+    private fun sendTo(device: BluetoothDevice, frame: ByteArray) = sendFramesTo(device, listOf(frame))
+
+    /** Ouvre une connexion et envoie les trames une par une, en attendant la confirmation de chaque envoi. */
+    private fun sendFramesTo(device: BluetoothDevice, frames: List<ByteArray>) {
+        if (frames.isEmpty()) return
+        var index = 0
         val cb = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
@@ -114,17 +137,36 @@ class BleMeshManager(private val context: Context) {
             }
             override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
                 val ch = gatt?.getService(serviceUuid)?.getCharacteristic(characteristicUuid)
-                if (ch == null) { emit("Service MeshChat introuvable chez ${device.address}"); gatt?.disconnect(); return }
-                ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                ch.value = data
-                gatt.writeCharacteristic(ch)
+                if (gatt == null || ch == null) {
+                    emit("Service MeshChat introuvable chez ${device.address}")
+                    gatt?.disconnect()
+                    return
+                }
+                writeFrame(gatt, ch, frames[index])
             }
-            override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
-                emit(if (status == BluetoothGatt.GATT_SUCCESS) "Envoyé à ${device.address}" else "Échec envoi (code $status)")
-                gatt?.disconnect()
+            override fun onCharacteristicWrite(gatt: BluetoothGatt?, ch: BluetoothGattCharacteristic?, status: Int) {
+                if (gatt == null) return
+                if (status != BluetoothGatt.GATT_SUCCESS) {
+                    emit("Échec envoi (code $status)")
+                    gatt.disconnect()
+                    return
+                }
+                index++
+                if (index < frames.size) {
+                    ch?.let { writeFrame(gatt, it, frames[index]) }
+                } else {
+                    emit("Envoyé à ${device.address}")
+                    gatt.disconnect()
+                }
             }
         }
         try { device.connectGatt(context, false, cb, BluetoothDevice.TRANSPORT_LE) } catch (e: SecurityException) { emit("Permission connexion manquante") }
+    }
+
+    private fun writeFrame(gatt: BluetoothGatt, ch: BluetoothGattCharacteristic, frame: ByteArray) {
+        ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+        ch.value = frame
+        gatt.writeCharacteristic(ch)
     }
 
     private val scanCallback = object : ScanCallback() {
@@ -143,7 +185,7 @@ class BleMeshManager(private val context: Context) {
         val pending = queue.drain()
         if (pending.isEmpty()) return
         emit("Envoi de ${pending.size} message(s) en attente")
-        pending.forEach { sendTo(device, it.encode()) }
+        pending.forEach { sendTo(device, textFrame(it)) }
     }
 
     private val gattCallback = object : BluetoothGattServerCallback() {
@@ -155,12 +197,19 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /**
-     * Décode un paquet reçu, ignore les doublons, affiche les messages qui nous sont destinés,
-     * puis relaie le message aux autres pairs si son TTL le permet.
-     */
-    private fun handleIncoming(fromAddress: String, data: ByteArray) {
-        val packet = MeshPacket.decode(data)
+    /** Premier octet = type de la trame : texte ou fragment de fichier. */
+    private fun handleIncoming(fromAddress: String, value: ByteArray) {
+        if (value.isEmpty()) return
+        val body = value.copyOfRange(1, value.size)
+        when (value[0]) {
+            TYPE_TEXT -> handleText(fromAddress, body)
+            TYPE_FRAGMENT -> handleFragment(body)
+            else -> emit("Message reçu inconnu")
+        }
+    }
+
+    private fun handleText(fromAddress: String, body: ByteArray) {
+        val packet = MeshPacket.decode(body)
         if (packet == null) { emit("Message reçu mal formé"); return }
         if (!seenIds.add(packet.id)) return
         val forMe = packet.recipient.all { it == 0.toByte() } || packet.recipient.contentEquals(myId)
@@ -168,13 +217,26 @@ class BleMeshManager(private val context: Context) {
         if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
     }
 
-    /** Transmet un paquet à tous les pairs, sauf celui qui vient de nous l'envoyer. */
+    /** Reçoit un fragment, et signale le fichier complet quand tous les morceaux sont là. */
+    private fun handleFragment(fragment: ByteArray) {
+        assemblies.entries.removeIf { it.value.isExpired() }
+        val (key, total, part) = MeshChunker.parse(fragment) ?: run { emit("Fragment mal formé"); return }
+        val assembly = assemblies.getOrPut(key) { MeshChunker.Assembly(total) }
+        assembly.add(part.first, part.second)
+        if (assembly.isComplete()) {
+            assemblies.remove(key)
+            val bytes = assembly.assemble()
+            emit("Fichier reçu : ${bytes.size} octets")
+        }
+    }
+
+    /** Transmet un texte à tous les pairs, sauf celui qui vient de nous l'envoyer. */
     private fun relay(packet: MeshPacket, exceptAddress: String) {
         val targets = peers.values.filter { it.address != exceptAddress }
         if (targets.isEmpty()) return
-        val data = packet.encode()
         emit("Relais vers ${targets.size} pair(s) (TTL ${packet.ttl})")
-        targets.forEach { sendTo(it, data) }
+        val frame = textFrame(packet)
+        targets.forEach { sendTo(it, frame) }
     }
 
     private val callback = object : AdvertiseCallback() {
@@ -188,12 +250,15 @@ class BleMeshManager(private val context: Context) {
         try { server?.close() } catch (e: SecurityException) { Log.w(TAG, "Fermeture serveur impossible", e) }
         scanning = false; advertising = false; server = null
         peers.clear()
+        assemblies.clear()
         instance = null
     }
 
     companion object {
         private const val TAG = "MeshChatBLE"
         private const val MAX_TEXT_BYTES = 200
+        private const val TYPE_TEXT: Byte = 1
+        private const val TYPE_FRAGMENT: Byte = 2
         @Volatile var instance: BleMeshManager? = null
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
