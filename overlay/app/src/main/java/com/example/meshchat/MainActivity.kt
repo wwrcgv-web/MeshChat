@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -29,12 +30,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -120,6 +124,29 @@ private fun pseudoFrom(shortId: String): String {
     return "anon" + number.toString().padStart(4, '0')
 }
 
+/** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
+@Composable
+private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
+    Canvas(modifier = Modifier.size(iconSize)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.09f
+        // Corps
+        drawOval(color, topLeft = Offset(w * 0.25f, h * 0.30f), size = Size(w * 0.5f, h * 0.64f))
+        // Tête
+        drawCircle(color, radius = w * 0.16f, center = Offset(w * 0.5f, h * 0.24f))
+        // Antennes
+        drawLine(color, Offset(w * 0.44f, h * 0.12f), Offset(w * 0.32f, h * 0.01f), strokeWidth = stroke)
+        drawLine(color, Offset(w * 0.56f, h * 0.12f), Offset(w * 0.68f, h * 0.01f), strokeWidth = stroke)
+        // Pattes (3 de chaque côté)
+        for (i in 0..2) {
+            val y = h * (0.40f + i * 0.18f)
+            drawLine(color, Offset(w * 0.25f, y), Offset(w * 0.03f, y + h * 0.08f), strokeWidth = stroke)
+            drawLine(color, Offset(w * 0.75f, y), Offset(w * 0.97f, y + h * 0.08f), strokeWidth = stroke)
+        }
+    }
+}
+
 @Composable
 private fun CircleButton(label: String, background: Color, textColor: Color, onClick: () -> Unit) {
     Box(
@@ -154,6 +181,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     }
     val green = if (dark) Color(0xFF6EE7A0) else Color(0xFF3F7D3F)
     val blue = if (dark) Color(0xFF93C5FD) else Color(0xFF2563EB)
+    val orange = Color(0xFFF59E0B)
     val grey = Color(0xFF9CA3AF)
     val bgColor = if (dark) Color(0xFF09090B) else Color.White
     val inkColor = if (dark) Color.White else Color(0xFF111827)
@@ -286,7 +314,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
-            title = { Text("🐞 Outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    BugIcon(orange, 26.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+            },
             text = {
                 Column {
                     Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -368,6 +402,24 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                         Spacer(Modifier.height(8.dp))
                         Text("Français", color = inkColor, fontSize = 14.sp)
                         Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 12.sp)
+
+                        // Outils de debug, tout en bas du panneau
+                        Spacer(Modifier.weight(1f))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    showSettings = false
+                                    showDebug = true
+                                }
+                                .padding(vertical = 10.dp)
+                        ) {
+                            BugIcon(orange, 26.dp)
+                            Spacer(Modifier.width(10.dp))
+                            Text("outils de debug", color = inkColor, fontSize = 15.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             }
@@ -379,20 +431,20 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : /@pseudo, mesh, pairs, 🐞 debug et ⚙ paramètres
+            // En-tête : /@pseudo, mesh, pairs et ⚙ paramètres
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "/@$pseudo",
                     color = green,
-                    fontSize = 20.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
                     modifier = Modifier.weight(1f)
                 )
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
                 Text("👥 $peerCount", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = { showDebug = true }) { Text("🐞", fontSize = 16.sp) }
                 TextButton(onClick = { showSettings = true }) { Text("⚙", fontSize = 18.sp) }
             }
 
