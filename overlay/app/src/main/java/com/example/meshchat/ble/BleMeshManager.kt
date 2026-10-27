@@ -19,7 +19,7 @@ class BleMeshManager(private val context: Context) {
     private var server: BluetoothGattServer? = null
     private var advertising = false
     private var scanning = false
-    private val peers = mutableMapOf<String, BluetoothDevice>()
+    private val peers = ConcurrentHashMap<String, BluetoothDevice>()
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val main = Handler(Looper.getMainLooper())
 
@@ -128,21 +128,33 @@ class BleMeshManager(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattServerCallback() {
         override fun onCharacteristicWriteRequest(device: BluetoothDevice?, requestId: Int, characteristic: BluetoothGattCharacteristic?, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?) {
-            if (characteristic?.uuid == characteristicUuid && value != null) handleIncoming(value)
+            if (characteristic?.uuid == characteristicUuid && value != null) handleIncoming(device?.address ?: "", value)
             if (responseNeeded && device != null) {
                 try { server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) } catch (e: SecurityException) { Log.e(TAG, "Réponse GATT impossible", e) }
             }
         }
     }
 
-    /** Décode un paquet reçu, ignore les doublons et affiche les messages qui nous sont destinés. */
-    private fun handleIncoming(data: ByteArray) {
+    /**
+     * Décode un paquet reçu, ignore les doublons, affiche les messages qui nous sont destinés,
+     * puis relaie le message aux autres pairs si son TTL le permet.
+     */
+    private fun handleIncoming(fromAddress: String, data: ByteArray) {
         val packet = MeshPacket.decode(data)
         if (packet == null) { emit("Message reçu mal formé"); return }
         if (!seenIds.add(packet.id)) return
         val forMe = packet.recipient.all { it == 0.toByte() } || packet.recipient.contentEquals(myId)
         if (forMe) emit("Reçu de ${shortId(packet.sender)} : ${packet.text}")
-        // Le relais (transmettre aux autres pairs si ttl > 0) viendra à l'étape C.
+        if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
+    }
+
+    /** Transmet un paquet à tous les pairs, sauf celui qui vient de nous l'envoyer. */
+    private fun relay(packet: MeshPacket, exceptAddress: String) {
+        val targets = peers.values.filter { it.address != exceptAddress }
+        if (targets.isEmpty()) return
+        val data = packet.encode()
+        emit("Relais vers ${targets.size} pair(s) (TTL ${packet.ttl})")
+        targets.forEach { sendTo(it, data) }
     }
 
     private val callback = object : AdvertiseCallback() {
