@@ -8,9 +8,11 @@ import java.security.SecureRandom
  *
  * Format d'un fragment :
  * [id du contenu 8 octets][numéro 2 octets][total 2 octets][données]
+ *
+ * Taille maximale d'un fragment : 212 octets, pour passer dans un envoi Bluetooth (244 octets utiles).
  */
 object MeshChunker {
-    const val CHUNK_SIZE = 400
+    const val CHUNK_SIZE = 200
     const val HEADER_SIZE = 12
     const val MAX_TOTAL_BYTES = 1024 * 1024
     const val ASSEMBLY_TIMEOUT_MS = 30_000L
