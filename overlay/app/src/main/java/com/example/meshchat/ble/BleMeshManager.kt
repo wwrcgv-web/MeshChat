@@ -217,7 +217,7 @@ class BleMeshManager(private val context: Context) {
         if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
     }
 
-    /** Reçoit un fragment, et signale le fichier complet quand tous les morceaux sont là. */
+    /** Reçoit un fragment, et transmet le fichier complet quand tous les morceaux sont là. */
     private fun handleFragment(fragment: ByteArray) {
         assemblies.entries.removeIf { it.value.isExpired() }
         val (key, total, part) = MeshChunker.parse(fragment) ?: run { emit("Fragment mal formé"); return }
@@ -227,6 +227,8 @@ class BleMeshManager(private val context: Context) {
             assemblies.remove(key)
             val bytes = assembly.assemble()
             emit("Fichier reçu : ${bytes.size} octets")
+            val receive = blobListener
+            if (receive != null) main.post { receive(bytes) }
         }
     }
 
@@ -262,5 +264,7 @@ class BleMeshManager(private val context: Context) {
         @Volatile var instance: BleMeshManager? = null
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
+        /** L'écran branche ici une fonction pour recevoir un fichier complet (octets de l'image). */
+        @Volatile var blobListener: ((ByteArray) -> Unit)? = null
     }
 }
