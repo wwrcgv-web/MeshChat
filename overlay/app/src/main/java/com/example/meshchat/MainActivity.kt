@@ -112,7 +112,16 @@ private fun MeshHome(onStart: () -> Unit) {
                 else -> journal = journal + line
             }
         }
-        onDispose { BleMeshManager.listener = null }
+        // Fichier complet reçu : on le décode et on l'affiche comme une photo reçue
+        BleMeshManager.blobListener = { bytes ->
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { photo ->
+                bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo)
+            }
+        }
+        onDispose {
+            BleMeshManager.listener = null
+            BleMeshManager.blobListener = null
+        }
     }
 
     LaunchedEffect(bubbles.size) {
@@ -151,7 +160,7 @@ private fun MeshHome(onStart: () -> Unit) {
                     ) {
                         Surface(color = if (b.mine) bubbleMine else bubbleOther, shape = RoundedCornerShape(12.dp)) {
                             Column(Modifier.padding(10.dp)) {
-                                Text(if (b.mine) "Moi" else "@${b.author}", color = green, fontSize = 11.sp)
+                                Text(if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${b.author}", color = green, fontSize = 11.sp)
                                 b.image?.let { img ->
                                     Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(180.dp))
                                 }
