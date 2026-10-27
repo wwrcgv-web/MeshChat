@@ -9,6 +9,7 @@ import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 @SuppressLint("MissingPermission")
 class BleMeshManager(private val context: Context) {
@@ -19,7 +20,11 @@ class BleMeshManager(private val context: Context) {
     private var advertising = false
     private var scanning = false
     private val peers = mutableMapOf<String, BluetoothDevice>()
+    private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val main = Handler(Looper.getMainLooper())
+
+    /** Identifiant fixe de ce téléphone, envoyé dans chaque message. */
+    val myId: ByteArray = MeshPacket.newPeerId()
 
     init { instance = this }
 
@@ -28,7 +33,11 @@ class BleMeshManager(private val context: Context) {
         main.post { listener?.invoke(msg) }
     }
 
+    private fun shortId(bytes: ByteArray): String =
+        bytes.take(4).joinToString("") { "%02x".format(it) }
+
     fun startAdvertising() {
+        emit("Mon identifiant : ${shortId(myId)}")
         val advertiser = adapter?.bluetoothLeAdvertiser ?: run { emit("Annonce Bluetooth indisponible"); return }
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
@@ -66,18 +75,23 @@ class BleMeshManager(private val context: Context) {
         } catch (e: SecurityException) { emit("Permission serveur manquante") }
     }
 
-    /** Envoie le texte à tous les pairs trouvés. Retourne le nombre de pairs visés. */
+    /** Envoie un message texte (200 octets maximum) à tous les pairs trouvés. Retourne le nombre de pairs visés. */
     fun sendMessage(text: String): Int {
+        if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
+            emit("Message trop long (200 caractères maximum)")
+            return 0
+        }
+        val packet = MeshPacket.newMessage(myId, text)
+        seenIds.add(packet.id)
+        val data = packet.encode()
         val targets = peers.values.toList()
         if (targets.isEmpty()) { emit("Aucun pair trouvé : message non envoyé"); return 0 }
-        val data = text.toByteArray(Charsets.UTF_8)
         targets.forEach { sendTo(it, data) }
         return targets.size
     }
 
     private fun sendTo(device: BluetoothDevice, data: ByteArray) {
         val cb = object : BluetoothGattCallback() {
-            var maxLen = 20
             override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
                     gatt?.requestMtu(247)
@@ -87,14 +101,13 @@ class BleMeshManager(private val context: Context) {
                 }
             }
             override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
-                maxLen = mtu - 3
                 gatt?.discoverServices()
             }
             override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
                 val ch = gatt?.getService(serviceUuid)?.getCharacteristic(characteristicUuid)
                 if (ch == null) { emit("Service MeshChat introuvable chez ${device.address}"); gatt?.disconnect(); return }
                 ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-                ch.value = data.copyOf(minOf(data.size, maxLen))
+                ch.value = data
                 gatt.writeCharacteristic(ch)
             }
             override fun onCharacteristicWrite(gatt: BluetoothGatt?, characteristic: BluetoothGattCharacteristic?, status: Int) {
@@ -115,11 +128,21 @@ class BleMeshManager(private val context: Context) {
 
     private val gattCallback = object : BluetoothGattServerCallback() {
         override fun onCharacteristicWriteRequest(device: BluetoothDevice?, requestId: Int, characteristic: BluetoothGattCharacteristic?, preparedWrite: Boolean, responseNeeded: Boolean, offset: Int, value: ByteArray?) {
-            if (characteristic?.uuid == characteristicUuid && value != null) emit("Reçu : ${String(value, Charsets.UTF_8)}")
+            if (characteristic?.uuid == characteristicUuid && value != null) handleIncoming(value)
             if (responseNeeded && device != null) {
                 try { server?.sendResponse(device, requestId, BluetoothGatt.GATT_SUCCESS, 0, null) } catch (e: SecurityException) { Log.e(TAG, "Réponse GATT impossible", e) }
             }
         }
+    }
+
+    /** Décode un paquet reçu, ignore les doublons et affiche les messages qui nous sont destinés. */
+    private fun handleIncoming(data: ByteArray) {
+        val packet = MeshPacket.decode(data)
+        if (packet == null) { emit("Message reçu mal formé"); return }
+        if (!seenIds.add(packet.id)) return
+        val forMe = packet.recipient.all { it == 0.toByte() } || packet.recipient.contentEquals(myId)
+        if (forMe) emit("Reçu de ${shortId(packet.sender)} : ${packet.text}")
+        // Le relais (transmettre aux autres pairs si ttl > 0) viendra à l'étape C.
     }
 
     private val callback = object : AdvertiseCallback() {
@@ -138,6 +161,7 @@ class BleMeshManager(private val context: Context) {
 
     companion object {
         private const val TAG = "MeshChatBLE"
+        private const val MAX_TEXT_BYTES = 200
         @Volatile var instance: BleMeshManager? = null
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
