@@ -44,6 +44,12 @@ import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
 import java.io.ByteArrayOutputStream
 
+/** Réglages partagés, observés par l'écran. */
+object AppState {
+    var serviceOn by mutableStateOf(false)
+    var runInBackground by mutableStateOf(true)
+}
+
 class MainActivity : ComponentActivity() {
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
         if (result.values.all { it }) startMeshService()
@@ -51,7 +57,18 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MeshHome(onStart = { askPermissions() }) }
+        setContent {
+            MeshHome(
+                onStart = { askPermissions() },
+                onStop = { stopMeshService() }
+            )
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Si « Rester actif en arrière-plan » est désactivé, le service s'arrête quand l'app quitte l'écran
+        if (!AppState.runInBackground && AppState.serviceOn) stopMeshService()
     }
 
     private fun askPermissions() {
@@ -63,6 +80,12 @@ class MainActivity : ComponentActivity() {
 
     private fun startMeshService() {
         ContextCompat.startForegroundService(this, Intent(this, MeshService::class.java).setAction(MeshService.ACTION_START))
+        AppState.serviceOn = true
+    }
+
+    private fun stopMeshService() {
+        stopService(Intent(this, MeshService::class.java))
+        AppState.serviceOn = false
     }
 }
 
@@ -97,7 +120,7 @@ private fun CircleButton(label: String, background: Color, textColor: Color, onC
 }
 
 @Composable
-private fun MeshHome(onStart: () -> Unit) {
+private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
@@ -107,7 +130,6 @@ private fun MeshHome(onStart: () -> Unit) {
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
-    var runInBackground by remember { mutableStateOf(true) }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
 
@@ -182,7 +204,7 @@ private fun MeshHome(onStart: () -> Unit) {
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
-            journal = journal + "Service non activé : appuyez sur ACTIVER LE SERVICE"
+            journal = journal + "Service non activé : activez le service"
             return
         }
         if (draft.isNotBlank()) {
@@ -215,14 +237,13 @@ private fun MeshHome(onStart: () -> Unit) {
         )
     }
 
-    // Paramètres : panneau à droite de l'écran, options les unes sous les autres
+    // Paramètres : panneau à droite de l'écran
     if (showSettings) {
         Dialog(
             onDismissRequest = { showSettings = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Row(Modifier.fillMaxSize().background(Color(0x99000000))) {
-                // Zone vide à gauche : un appui la ferme le panneau
                 Box(Modifier.weight(1f).fillMaxHeight().clickable { showSettings = false })
                 Surface(
                     modifier = Modifier.width(300.dp).fillMaxHeight(),
@@ -254,9 +275,13 @@ private fun MeshHome(onStart: () -> Unit) {
                         Text("RÉGLAGES", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         Text("Rester actif en arrière-plan", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("Garde le Bluetooth actif quand l'app est fermée", color = grey, fontSize = 12.sp)
+                        Text("Si désactivé, le service s'arrête quand l'app est quittée", color = grey, fontSize = 12.sp)
                         Spacer(Modifier.height(6.dp))
-                        Switch(checked = runInBackground, onCheckedChange = { runInBackground = it })
+                        Switch(
+                            checked = AppState.runInBackground,
+                            onCheckedChange = { AppState.runInBackground = it },
+                            colors = SwitchDefaults.colors(checkedTrackColor = green)
+                        )
 
                         Spacer(Modifier.height(16.dp))
                         Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
@@ -292,11 +317,32 @@ private fun MeshHome(onStart: () -> Unit) {
             }
 
             Spacer(Modifier.height(8.dp))
-            Button(
-                onClick = onStart,
-                colors = ButtonDefaults.buttonColors(containerColor = green),
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("ACTIVER LE SERVICE", color = Color.White, fontSize = 13.sp) }
+
+            // Interrupteur du service
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    if (AppState.serviceOn) "SERVICE ACTIF" else "SERVICE ARRÊTÉ",
+                    color = inkColor,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace,
+                    modifier = Modifier.weight(1f)
+                )
+                Switch(
+                    checked = AppState.serviceOn,
+                    onCheckedChange = { on ->
+                        if (on) {
+                            journal = journal + "Activation du service demandée"
+                            onStart()
+                        } else {
+                            journal = journal + "Service arrêté"
+                            onStop()
+                        }
+                    },
+                    colors = SwitchDefaults.colors(checkedTrackColor = green)
+                )
+            }
+
             Spacer(Modifier.height(8.dp))
 
             // Conversation
