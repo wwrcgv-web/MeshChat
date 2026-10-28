@@ -1,10 +1,13 @@
 package com.example.meshchat
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -47,12 +50,70 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
-import com.example.meshchat.audio.VoiceRecorder
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 import java.io.ByteArrayOutputStream
 import java.io.File
+
+/** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
+class VoiceRecorder(private val context: Context) {
+    private var recorder: MediaRecorder? = null
+    private var file: File? = null
+
+    /** Démarre l'enregistrement. Retourne false si le micro n'est pas disponible. */
+    fun start(): Boolean {
+        val out = File(context.cacheDir, "vocal_envoi.m4a")
+        @Suppress("DEPRECATION")
+        val rec = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else MediaRecorder()
+        return try {
+            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            rec.setAudioEncodingBitRate(12_000)
+            rec.setAudioSamplingRate(16_000)
+            rec.setAudioChannels(1)
+            rec.setOutputFile(out.absolutePath)
+            rec.prepare()
+            rec.start()
+            recorder = rec
+            file = out
+            true
+        } catch (e: Exception) {
+            rec.release()
+            false
+        }
+    }
+
+    /** Arrête l'enregistrement et retourne le contenu du fichier, ou null si l'enregistrement a échoué. */
+    fun stop(): ByteArray? {
+        val rec = recorder ?: return null
+        recorder = null
+        return try {
+            rec.stop()
+            file?.readBytes()
+        } catch (e: Exception) {
+            null
+        } finally {
+            rec.release()
+        }
+    }
+
+    companion object {
+        /** Joue un fichier audio, puis libère le lecteur à la fin. */
+        fun play(path: String) {
+            try {
+                val player = MediaPlayer()
+                player.setDataSource(path)
+                player.setOnCompletionListener { it.release() }
+                player.prepare()
+                player.start()
+            } catch (e: Exception) {
+                // Fichier illisible : on ne bloque pas l'écran
+            }
+        }
+    }
+}
 
 /** Réglages partagés, observés par l'écran. */
 object AppState {
@@ -420,7 +481,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     /** Arrête l'enregistrement et envoie le vocal au téléphone choisi (ou à tous). */
     fun stopAndSendVoice() {
         recording = false
-        val bytes = recorder.stop()
+        val bytes: ByteArray? = recorder.stop()
         if (bytes == null || bytes.isEmpty()) {
             journal = journal + "Vocal vide, rien n'a été envoyé"
             return
