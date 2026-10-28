@@ -34,11 +34,15 @@ class BleMeshManager(private val context: Context) {
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
     private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique reçue
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
-    private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()    // messages privés déjà vus
+    private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()    // messages privés et accusés déjà vus
     private val seenFragments: MutableSet<String> = ConcurrentHashMap.newKeySet() // fragments déjà vus
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
+    private val pendingRead = ConcurrentHashMap<String, MutableList<String>>()    // expéditeur -> messages reçus non lus
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
+
+    /** Identifiant du dernier message privé envoyé (pour suivre ses accusés). Null pour un message public. */
+    @Volatile var lastSentId: String? = null
 
     /** Identifiant fixe de ce téléphone, gardé entre les lancements. */
     val myId: ByteArray = loadOrCreateId()
@@ -138,6 +142,7 @@ class BleMeshManager(private val context: Context) {
      * Retourne le nombre de pairs visés, ou 1 si le message public est mis en attente.
      */
     fun sendMessage(text: String, toPeerId: String? = null): Int {
+        lastSentId = null
         val bytes = text.toByteArray(Charsets.UTF_8)
 
         if (toPeerId == null) {
@@ -174,6 +179,7 @@ class BleMeshManager(private val context: Context) {
         }
         val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(msgId.toHex())
+        lastSentId = msgId.toHex()
         // Trame : type (1) + TTL (1) + identifiant aléatoire (8) + données chiffrées (qui contiennent aussi l'expéditeur, caché)
         val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) + msgId + CryptoEngine.encrypt(bytes, key)
         targets.forEach { sendTo(it, frame) }
@@ -206,6 +212,12 @@ class BleMeshManager(private val context: Context) {
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
         targets.forEach { sendFramesTo(it, frames) }
         return targets.size
+    }
+
+    /** Marque comme lus les messages reçus de ce téléphone : il renvoie un accusé « Lu » pour chacun. */
+    fun markRead(peerId: String) {
+        val list = pendingRead.remove(peerId) ?: return
+        list.forEach { sendAck(peerId, it.hexToBytes(), KIND_READ) }
     }
 
     private fun textFrame(packet: MeshPacket): ByteArray = byteArrayOf(TYPE_TEXT) + packet.encode()
@@ -318,6 +330,7 @@ class BleMeshManager(private val context: Context) {
             }
             TYPE_KEY -> handleKey(value.copyOfRange(1, value.size))
             TYPE_SECRET -> handleSecret(fromAddress, value.copyOfRange(1, value.size))
+            TYPE_ACK -> handleAck(fromAddress, value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -337,7 +350,8 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Message privé chiffré. Le corps contient : TTL (1) + identifiant aléatoire (8) + données chiffrées.
-     * Aucun nom n'est visible. Si on peut déchiffrer, le message est pour nous. Sinon, on le relaie sans l'ouvrir.
+     * Si on peut le déchiffrer, il est pour nous : on affiche, on envoie l'accusé « Reçu ».
+     * Dans tous les cas, on le relaie sans l'ouvrir.
      */
     private fun handleSecret(fromAddress: String, body: ByteArray) {
         if (body.size < 1 + MeshPacket.ID_SIZE + 28) { emit("Message privé mal formé"); return }
@@ -351,6 +365,8 @@ class BleMeshManager(private val context: Context) {
         val opened = openForMe(cipher)
         if (opened != null) {
             emit("Reçu privé de ${opened.first} : ${String(opened.second, Charsets.UTF_8)}")
+            pendingRead.getOrPut(opened.first) { mutableListOf() }.add(msgId.toHex())
+            sendAck(opened.first, msgId, KIND_RECEIVED)
         }
 
         // On relaie dans tous les cas : un intermédiaire ne peut pas savoir si c'est pour lui
@@ -364,6 +380,52 @@ class BleMeshManager(private val context: Context) {
         emit("Relais privé vers ${targets.size} pair(s) (TTL $ttl)")
         val frame = byteArrayOf(TYPE_SECRET, ttl.toByte()) + msgId + cipher
         targets.forEach { sendTo(it, frame) }
+    }
+
+    /**
+     * Envoie un accusé chiffré à l'expéditeur (Reçu ou Lu).
+     * L'accusé contient : le genre (1 octet) + l'identifiant du message concerné (8), chiffrés avec la clé de l'expéditeur.
+     */
+    private fun sendAck(peerId: String, originalId: ByteArray, kind: Byte) {
+        val key = sharedKeyWith(peerId) ?: return
+        val ackId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
+        seenSecret.add(ackId.toHex())
+        val cipher = CryptoEngine.encrypt(byteArrayOf(kind) + originalId, key)
+        val frame = byteArrayOf(TYPE_ACK, MeshPacket.DEFAULT_TTL.toByte()) + ackId + cipher
+        peers.values.toList().forEach { sendTo(it, frame) }
+    }
+
+    /** Reçoit un accusé. Si c'est pour un de nos messages, on affiche « Statut ... ». Sinon on le relaie. */
+    private fun handleAck(fromAddress: String, body: ByteArray) {
+        if (body.size < 1 + MeshPacket.ID_SIZE + 28) return
+        val ttl = body[0].toInt() and 0xFF
+        val ackId = body.copyOfRange(1, 1 + MeshPacket.ID_SIZE)
+        val cipher = body.copyOfRange(1 + MeshPacket.ID_SIZE, body.size)
+        if (!seenSecret.add(ackId.toHex())) return
+
+        val opened = openAck(cipher)
+        if (opened != null) {
+            val label = if (opened.first == KIND_READ) "lu" else "reçu"
+            emit("Statut ${opened.second} $label")
+        }
+
+        if (ttl > 1) {
+            val targets = peers.values.filter { it.address != fromAddress }
+            val frame = byteArrayOf(TYPE_ACK, (ttl - 1).toByte()) + ackId + cipher
+            targets.forEach { sendTo(it, frame) }
+        }
+    }
+
+    /** Essaie de lire un accusé avec la clé de chaque téléphone connu. Retourne le genre et l'identifiant du message. */
+    private fun openAck(cipher: ByteArray): Pair<Byte, String>? {
+        for (entry in peerKeys.entries) {
+            val key = CryptoEngine.sharedKey(keyPair.private, entry.value)
+            val plain = CryptoEngine.decrypt(cipher, key) ?: continue
+            if (plain.size == 1 + MeshPacket.ID_SIZE) {
+                return Pair(plain[0], plain.copyOfRange(1, plain.size).toHex())
+            }
+        }
+        return null
     }
 
     /**
@@ -446,6 +508,7 @@ class BleMeshManager(private val context: Context) {
         peerKeys.clear()
         assemblies.clear()
         seenFragments.clear()
+        pendingRead.clear()
         publishPeers()
         instance = null
     }
@@ -459,6 +522,9 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
         private const val TYPE_SECRET: Byte = 4
+        private const val TYPE_ACK: Byte = 5
+        private const val KIND_RECEIVED: Byte = 1
+        private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
         private const val FLAG_PRIVATE = 1
         /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
