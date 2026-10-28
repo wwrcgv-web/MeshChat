@@ -53,9 +53,11 @@ import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
+import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
+import kotlinx.coroutines.delay
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
 class VoiceRecorder(private val context: Context) {
@@ -153,6 +155,8 @@ class MainActivity : ComponentActivity() {
         }
         // Notifications : obligatoires à partir d'Android 13 pour afficher la notification du service
         if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
+        // Appareils à proximité : nécessaire pour le Wi-Fi Aware sur Android 13 et plus
+        if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.NEARBY_WIFI_DEVICES
 
         if (needed.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
             startMeshService()
@@ -305,6 +309,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var pseudo by remember { mutableStateOf("anon0000") }
     var counts by remember { mutableStateOf(mapOf<String, Int>()) }
     var recording by remember { mutableStateOf(false) }
+    var wifiPeers by remember { mutableStateOf(0) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
@@ -313,6 +318,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
+    val wifiDiscovery = remember { WifiAwareDiscovery(context) }
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -337,6 +343,25 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     }
 
     fun c(key: String): Int = counts[key] ?: 0
+
+    // Wi-Fi Aware : démarre la découverte quand le service est actif, l'arrête quand il s'arrête
+    LaunchedEffect(AppState.serviceOn) {
+        if (AppState.serviceOn) {
+            var tries = 0
+            while (BleMeshManager.instance == null && tries < 30) {
+                delay(300)
+                tries++
+            }
+            val manager = BleMeshManager.instance
+            if (manager != null) {
+                val myHex = manager.myId.joinToString("") { "%02x".format(it) }
+                wifiDiscovery.start(myHex, { wifiPeers = it }, { line -> journal = journal + line })
+            }
+        } else {
+            wifiDiscovery.stop()
+            wifiPeers = 0
+        }
+    }
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
@@ -542,6 +567,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Pairs Wi-Fi Aware : $wifiPeers", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
