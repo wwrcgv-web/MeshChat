@@ -34,7 +34,8 @@ class BleMeshManager(private val context: Context) {
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
     private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique reçue
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
-    private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()   // identifiants des messages privés déjà vus
+    private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()    // messages privés déjà vus
+    private val seenFragments: MutableSet<String> = ConcurrentHashMap.newKeySet() // fragments déjà vus
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
@@ -169,7 +170,7 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Envoie une photo ou un vocal, découpé en fragments.
-     * Sans [toPeerId] : envoi public. Avec [toPeerId] : le contenu est chiffré avant découpage (voisin direct seulement).
+     * Sans [toPeerId] : envoi public, voisins directs. Avec [toPeerId] : contenu chiffré, relayé jusqu'au destinataire.
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
         val targets = peers.values.toList()
@@ -187,8 +188,8 @@ class BleMeshManager(private val context: Context) {
 
         val recipient = toPeerId?.hexToBytes() ?: ByteArray(MeshPacket.ID_SIZE)
         val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
-        // Trame : type (1) + expéditeur (8) + destinataire (8) + fragment
-        val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT) + myId + recipient + it }
+        // Trame : type (1) + TTL (1) + expéditeur (8) + destinataire (8) + fragment
+        val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT, MeshPacket.DEFAULT_TTL.toByte()) + myId + recipient + it }
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
         targets.forEach { sendFramesTo(it, frames) }
         return targets.size
@@ -296,12 +297,14 @@ class BleMeshManager(private val context: Context) {
     /** Premier octet = type de la trame. */
     private fun handleIncoming(fromAddress: String, value: ByteArray) {
         if (value.isEmpty()) return
-        val body = value.copyOfRange(1, value.size)
         when (value[0]) {
-            TYPE_TEXT -> handleText(fromAddress, body)
-            TYPE_FRAGMENT -> handleFragment(body)
-            TYPE_KEY -> handleKey(body)
-            TYPE_SECRET -> handleSecret(fromAddress, body)
+            TYPE_TEXT -> handleText(fromAddress, value.copyOfRange(1, value.size))
+            TYPE_FRAGMENT -> {
+                if (value.size < 2) { emit("Fragment mal formé"); return }
+                handleFragment(fromAddress, value[1].toInt() and 0xFF, value.copyOfRange(2, value.size))
+            }
+            TYPE_KEY -> handleKey(value.copyOfRange(1, value.size))
+            TYPE_SECRET -> handleSecret(fromAddress, value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -375,17 +378,29 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Reçoit un fragment. Le corps contient : expéditeur (8) + destinataire (8) + fragment.
-     * Un contenu privé est déchiffré une fois complet. Un contenu qui ne nous est pas destiné est ignoré.
+     * Un fragment privé pour quelqu'un d'autre est relayé sans être ouvert.
+     * Un contenu privé pour nous est déchiffré une fois complet.
      */
-    private fun handleFragment(body: ByteArray) {
+    private fun handleFragment(fromAddress: String, ttl: Int, body: ByteArray) {
         assemblies.entries.removeIf { it.value.isExpired() }
         if (body.size < MeshPacket.ID_SIZE * 2) { emit("Fragment mal formé"); return }
         val sender = body.copyOfRange(0, MeshPacket.ID_SIZE)
         val recipient = body.copyOfRange(MeshPacket.ID_SIZE, MeshPacket.ID_SIZE * 2)
         val isPublic = recipient.all { it == 0.toByte() }
-        if (!(isPublic || recipient.contentEquals(myId))) return
+        val forMe = isPublic || recipient.contentEquals(myId)
         val fragment = body.copyOfRange(MeshPacket.ID_SIZE * 2, body.size)
         val (key, total, part) = MeshChunker.parse(fragment) ?: run { emit("Fragment mal formé"); return }
+
+        // Chaque fragment n'est traité qu'une fois, même reçu par plusieurs chemins
+        if (!seenFragments.add("$key:${part.first}")) return
+        if (seenFragments.size > MAX_SEEN_FRAGMENTS) seenFragments.clear()
+
+        if (!forMe) {
+            // Fichier privé pour un autre téléphone : on le transmet sans l'ouvrir
+            if (ttl > 1) relayFragment(ttl - 1, body, fromAddress)
+            return
+        }
+
         val assembly = assemblies.getOrPut(key) { MeshChunker.Assembly(total) }
         assembly.add(part.first, part.second)
         if (assembly.isComplete()) {
@@ -407,6 +422,15 @@ class BleMeshManager(private val context: Context) {
             val receive = blobListener
             if (receive != null) main.post { receive(bytes, from) }
         }
+    }
+
+    /** Transmet un fragment privé à tous les pairs, sauf celui qui vient de nous l'envoyer. */
+    private fun relayFragment(ttl: Int, body: ByteArray, exceptAddress: String) {
+        val targets = peers.values.filter { it.address != exceptAddress }
+        if (targets.isEmpty()) return
+        emit("Relais fichier privé vers ${targets.size} pair(s) (TTL $ttl)")
+        val frame = byteArrayOf(TYPE_FRAGMENT, ttl.toByte()) + body
+        targets.forEach { sendTo(it, frame) }
     }
 
     /** Transmet un texte public à tous les pairs, sauf celui qui vient de nous l'envoyer. */
@@ -432,6 +456,7 @@ class BleMeshManager(private val context: Context) {
         peerIds.clear()
         peerKeys.clear()
         assemblies.clear()
+        seenFragments.clear()
         publishPeers()
         instance = null
     }
@@ -440,6 +465,7 @@ class BleMeshManager(private val context: Context) {
         private const val TAG = "MeshChatBLE"
         private const val MAX_TEXT_BYTES = 200
         private const val MAX_PRIVATE_BYTES = 180
+        private const val MAX_SEEN_FRAGMENTS = 5000
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
