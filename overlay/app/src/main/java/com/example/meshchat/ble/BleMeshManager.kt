@@ -92,7 +92,6 @@ class BleMeshManager(private val context: Context) {
     /**
      * Envoie un message texte (200 octets maximum).
      * [toPeerId] : identifiant du destinataire, ou null pour tout le monde.
-     * Les téléphones intermédiaires relaient le message sans l'afficher, sauf pour le destinataire.
      * Retourne le nombre de pairs visés, ou 1 si le message est mis en attente.
      */
     fun sendMessage(text: String, toPeerId: String? = null): Int {
@@ -114,12 +113,18 @@ class BleMeshManager(private val context: Context) {
         return targets.size
     }
 
-    /** Envoie un contenu binaire (image, vocal...) découpé en fragments à tous les pairs. */
-    fun sendBlob(bytes: ByteArray): Int {
+    /**
+     * Envoie une photo ou un fichier, découpé en fragments.
+     * [toPeerId] : destinataire, ou null pour tout le monde.
+     * Chaque fragment porte l'expéditeur et le destinataire ; seul le destinataire l'affiche.
+     */
+    fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
         val targets = peers.values.toList()
         if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
+        val recipient = toPeerId?.hexToBytes() ?: ByteArray(MeshPacket.ID_SIZE)
         val fragments = MeshChunker.split(MeshChunker.newContentId(), bytes)
-        val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT) + it }
+        // Trame : type (1) + expéditeur (8) + destinataire (8) + fragment
+        val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT) + myId + recipient + it }
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
         targets.forEach { sendFramesTo(it, frames) }
         return targets.size
@@ -183,7 +188,7 @@ class BleMeshManager(private val context: Context) {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val r = result ?: return
             val mac = r.device.address
-            val isNewDevice = peers.put(mac, r.device) == null
+            peers.put(mac, r.device)
             val idBytes = r.scanRecord?.getManufacturerSpecificData(COMPANY_ID)
             if (idBytes != null && idBytes.size == MeshPacket.ID_SIZE) {
                 val id = idBytes.toHex()
@@ -197,8 +202,6 @@ class BleMeshManager(private val context: Context) {
                     publishPeers()
                     sendQueuedTo(r.device)
                 }
-            } else if (isNewDevice) {
-                Log.i(TAG, "Appareil sans identifiant : $mac")
             }
         }
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
@@ -249,9 +252,18 @@ class BleMeshManager(private val context: Context) {
         if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
     }
 
-    /** Reçoit un fragment, et transmet le fichier complet quand tous les morceaux sont là. */
-    private fun handleFragment(fragment: ByteArray) {
+    /**
+     * Reçoit un fragment. Le corps contient : expéditeur (8) + destinataire (8) + fragment.
+     * Un fichier qui ne nous est pas destiné est ignoré.
+     */
+    private fun handleFragment(body: ByteArray) {
         assemblies.entries.removeIf { it.value.isExpired() }
+        if (body.size < MeshPacket.ID_SIZE * 2) { emit("Fragment mal formé"); return }
+        val sender = body.copyOfRange(0, MeshPacket.ID_SIZE)
+        val recipient = body.copyOfRange(MeshPacket.ID_SIZE, MeshPacket.ID_SIZE * 2)
+        val isPublic = recipient.all { it == 0.toByte() }
+        if (!(isPublic || recipient.contentEquals(myId))) return
+        val fragment = body.copyOfRange(MeshPacket.ID_SIZE * 2, body.size)
         val (key, total, part) = MeshChunker.parse(fragment) ?: run { emit("Fragment mal formé"); return }
         val assembly = assemblies.getOrPut(key) { MeshChunker.Assembly(total) }
         assembly.add(part.first, part.second)
@@ -259,8 +271,10 @@ class BleMeshManager(private val context: Context) {
             assemblies.remove(key)
             val bytes = assembly.assemble()
             emit("Fichier reçu : ${bytes.size} octets")
+            // null = conversation générale ; sinon identifiant de l'expéditeur pour une discussion privée
+            val from = if (isPublic) null else sender.toHex()
             val receive = blobListener
-            if (receive != null) main.post { receive(bytes) }
+            if (receive != null) main.post { receive(bytes, from) }
         }
     }
 
@@ -300,8 +314,11 @@ class BleMeshManager(private val context: Context) {
         @Volatile var instance: BleMeshManager? = null
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
-        /** L'écran branche ici une fonction pour recevoir un fichier complet (octets de l'image). */
-        @Volatile var blobListener: ((ByteArray) -> Unit)? = null
+        /**
+         * L'écran branche ici une fonction pour recevoir un fichier complet.
+         * Le second paramètre vaut null pour la conversation générale, ou l'identifiant de l'expéditeur pour une discussion privée.
+         */
+        @Volatile var blobListener: ((ByteArray, String?) -> Unit)? = null
         /** L'écran branche ici une fonction pour recevoir la liste des téléphones identifiés. */
         @Volatile var peersListener: ((List<MeshPeer>) -> Unit)? = null
     }
