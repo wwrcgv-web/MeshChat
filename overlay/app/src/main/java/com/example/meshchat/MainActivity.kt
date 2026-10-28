@@ -31,10 +31,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -45,10 +47,12 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
+import com.example.meshchat.audio.VoiceRecorder
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 import java.io.ByteArrayOutputStream
+import java.io.File
 
 /** Réglages partagés, observés par l'écran. */
 object AppState {
@@ -109,21 +113,31 @@ class MainActivity : ComponentActivity() {
 /** Identifiant de la conversation « Tous ». */
 private const val PUBLIC = "public"
 
+/** Premier octet d'un contenu envoyé en fragments : indique si c'est une photo ou un vocal. */
+private const val KIND_PHOTO: Byte = 1
+private const val KIND_AUDIO: Byte = 2
+
 /**
  * Une bulle de conversation.
  * chat = PUBLIC pour la conversation générale, ou l'identifiant complet du téléphone pour une discussion privée.
+ * audio = chemin du fichier vocal, si la bulle contient un vocal.
  */
 private data class Bubble(
     val mine: Boolean,
     val author: String,
     val text: String,
     val image: Bitmap? = null,
-    val chat: String
+    val chat: String,
+    val audio: String? = null
 )
 
 /** Titre affiché au-dessus d'une bulle. */
-private fun bubbleTitle(b: Bubble): String =
-    if (b.mine) "Moi" else if (b.author == "photo") "Photo" else "@${pseudoFrom(b.author.take(8))}"
+private fun bubbleTitle(b: Bubble): String = when {
+    b.mine -> "Moi"
+    b.author == "photo" -> "Photo"
+    b.author == "vocal" -> "Vocal"
+    else -> "@${pseudoFrom(b.author.take(8))}"
+}
 
 /** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth. */
 private fun compressPhoto(source: Bitmap): ByteArray {
@@ -157,6 +171,42 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
             val y = h * (0.40f + i * 0.18f)
             drawLine(color, Offset(w * 0.25f, y), Offset(w * 0.03f, y + h * 0.08f), strokeWidth = stroke)
             drawLine(color, Offset(w * 0.75f, y), Offset(w * 0.97f, y + h * 0.08f), strokeWidth = stroke)
+        }
+    }
+}
+
+/** Bouton micro : blanc avec un micro noir, comme sur la capture. Rouge pendant l'enregistrement. */
+@Composable
+private fun MicButton(recording: Boolean, onClick: () -> Unit) {
+    val bg = if (recording) Color(0xFFDC2626) else Color.White
+    val fg = if (recording) Color.White else Color.Black
+    Box(
+        modifier = Modifier.size(44.dp).clip(CircleShape).background(bg).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Canvas(modifier = Modifier.size(22.dp)) {
+            val w = size.width
+            val h = size.height
+            // Capsule du micro
+            drawRoundRect(
+                color = fg,
+                topLeft = Offset(w * 0.30f, 0f),
+                size = Size(w * 0.40f, h * 0.56f),
+                cornerRadius = CornerRadius(w * 0.20f)
+            )
+            // Arc autour de la capsule
+            drawArc(
+                color = fg,
+                startAngle = 0f,
+                sweepAngle = 180f,
+                useCenter = false,
+                topLeft = Offset(w * 0.15f, h * 0.30f),
+                size = Size(w * 0.70f, h * 0.50f),
+                style = Stroke(width = w * 0.08f)
+            )
+            // Pied et base
+            drawLine(fg, Offset(w * 0.5f, h * 0.80f), Offset(w * 0.5f, h * 0.95f), strokeWidth = w * 0.08f)
+            drawLine(fg, Offset(w * 0.30f, h * 0.95f), Offset(w * 0.70f, h * 0.95f), strokeWidth = w * 0.08f)
         }
     }
 }
@@ -195,12 +245,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var selectedChat by remember { mutableStateOf(PUBLIC) }
     var pseudo by remember { mutableStateOf("anon0000") }
     var counts by remember { mutableStateOf(mapOf<String, Int>()) }
+    var recording by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
+    val recorder = remember { VoiceRecorder(context) }
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -296,13 +348,20 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             // Si la discussion choisie n'est plus à portée, on revient à « Tous »
             if (selectedChat != PUBLIC && list.none { it.id == selectedChat }) selectedChat = PUBLIC
         }
-        // Photo complète reçue : affichée dans « Tous » si elle est publique, sinon dans la discussion de l'expéditeur
+        // Contenu complet reçu : le premier octet indique si c'est une photo ou un vocal
         BleMeshManager.blobListener = { bytes, from ->
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { photo ->
-                if (from == null) {
-                    bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
-                } else {
-                    bubbles = bubbles + Bubble(false, from, "Photo reçue", photo, from)
+            if (bytes.isNotEmpty() && bytes[0] == KIND_AUDIO) {
+                val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
+                file.writeBytes(bytes.copyOfRange(1, bytes.size))
+                val chat = from ?: PUBLIC
+                bubbles = bubbles + Bubble(false, from ?: "vocal", "Vocal reçu", null, chat, file.absolutePath)
+            } else if (bytes.isNotEmpty() && bytes[0] == KIND_PHOTO) {
+                BitmapFactory.decodeByteArray(bytes, 1, bytes.size - 1)?.let { photo ->
+                    if (from == null) {
+                        bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
+                    } else {
+                        bubbles = bubbles + Bubble(false, from, "Photo reçue", photo, from)
+                    }
                 }
             }
         }
@@ -336,11 +395,59 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             }
         }
         pendingPhoto?.let { photo ->
-            val sent = manager.sendBlob(compressPhoto(photo), target)
+            val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
                 bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, selectedChat)
                 pendingPhoto = null
             }
+        }
+    }
+
+    /** Démarre l'enregistrement du vocal. */
+    fun startVoice() {
+        if (BleMeshManager.instance == null) {
+            journal = journal + "Service non activé : activez le service"
+            return
+        }
+        if (recorder.start()) {
+            recording = true
+            journal = journal + "Enregistrement vocal…"
+        } else {
+            journal = journal + "Micro indisponible"
+        }
+    }
+
+    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi (ou à tous). */
+    fun stopAndSendVoice() {
+        recording = false
+        val bytes = recorder.stop()
+        if (bytes == null || bytes.isEmpty()) {
+            journal = journal + "Vocal vide, rien n'a été envoyé"
+            return
+        }
+        val manager = BleMeshManager.instance ?: return
+        val target = if (selectedChat == PUBLIC) null else selectedChat
+        val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
+        if (sent > 0) {
+            val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
+            file.writeBytes(bytes)
+            bubbles = bubbles + Bubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath)
+        }
+    }
+
+    // Permission du micro : demandée la première fois qu'on appuie sur le micro
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) startVoice() else journal = journal + "Micro refusé dans les réglages du téléphone"
+    }
+
+    /** Un appui sur le micro : démarre, ou arrête et envoie. */
+    fun onMicTap() {
+        if (recording) {
+            stopAndSendVoice()
+        } else if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+            startVoice()
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
     }
 
@@ -558,6 +665,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                                 b.image?.let { img ->
                                     Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
                                 }
+                                b.audio?.let { path ->
+                                    Text(
+                                        "▶ Écouter le vocal",
+                                        color = green,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        modifier = Modifier.clickable { VoiceRecorder.play(path) }.padding(vertical = 4.dp)
+                                    )
+                                }
                                 Text(b.text, color = inkColor, fontSize = 15.sp)
                             }
                         }
@@ -620,7 +736,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     if (canSend) {
                         CircleButton("➤", green, Color.White) { send() }
                     } else {
-                        CircleButton("🎤", lightGrey, inkColor) { journal = journal + "Vocal : pas encore branché" }
+                        MicButton(recording) { onMicTap() }
                     }
                 }
             }
