@@ -11,6 +11,7 @@ import android.util.Log
 import com.example.meshchat.crypto.CryptoEngine
 import java.security.KeyPair
 import java.security.PublicKey
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.SecretKey
@@ -33,6 +34,7 @@ class BleMeshManager(private val context: Context) {
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
     private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique reçue
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
+    private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()   // identifiants des messages privés déjà vus
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
@@ -67,9 +69,6 @@ class BleMeshManager(private val context: Context) {
         val list = peerIds.values.distinct().sorted().map { MeshPeer(it) }
         main.post { peersListener?.invoke(list) }
     }
-
-    /** Vrai si la clé de ce téléphone a bien été reçue. */
-    fun hasKeyFor(peerId: String): Boolean = peerKeys.containsKey(peerId)
 
     /** Secret commun avec ce téléphone, ou null si sa clé n'a pas encore été reçue. */
     fun sharedKeyWith(peerId: String): SecretKey? {
@@ -119,39 +118,75 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Envoie un message texte (200 octets maximum).
-     * [toPeerId] : identifiant du destinataire, ou null pour tout le monde.
-     * Retourne le nombre de pairs visés, ou 1 si le message est mis en attente.
+     * Envoie un message texte.
+     * Sans [toPeerId] : message public (200 octets maximum), relayé par les téléphones intermédiaires.
+     * Avec [toPeerId] : message privé chiffré (180 octets maximum), relayé, lisible seulement par le destinataire.
+     * Retourne le nombre de pairs visés, ou 1 si le message public est mis en attente.
      */
     fun sendMessage(text: String, toPeerId: String? = null): Int {
-        if (text.toByteArray(Charsets.UTF_8).size > MAX_TEXT_BYTES) {
-            emit("Message trop long (200 caractères maximum)")
+        val bytes = text.toByteArray(Charsets.UTF_8)
+
+        if (toPeerId == null) {
+            if (bytes.size > MAX_TEXT_BYTES) {
+                emit("Message trop long (200 caractères maximum)")
+                return 0
+            }
+            val packet = MeshPacket(UUID.randomUUID(), myId, ByteArray(MeshPacket.ID_SIZE), MeshPacket.DEFAULT_TTL, text)
+            seenIds.add(packet.id)
+            val targets = peers.values.toList()
+            if (targets.isEmpty()) {
+                queue.add(packet)
+                emit("Aucun pair : message mis en attente (10 min)")
+                return 1
+            }
+            val frame = textFrame(packet)
+            targets.forEach { sendTo(it, frame) }
+            return targets.size
+        }
+
+        // Message privé : chiffré avec le secret commun avec le destinataire
+        if (bytes.size > MAX_PRIVATE_BYTES) {
+            emit("Message privé trop long (180 caractères maximum)")
             return 0
         }
-        val recipient = toPeerId?.hexToBytes() ?: ByteArray(MeshPacket.ID_SIZE)
-        val packet = MeshPacket(UUID.randomUUID(), myId, recipient, MeshPacket.DEFAULT_TTL, text)
-        seenIds.add(packet.id)
+        val key = sharedKeyWith(toPeerId) ?: run {
+            emit("Clé de ce pair pas encore reçue : message non envoyé")
+            return 0
+        }
         val targets = peers.values.toList()
         if (targets.isEmpty()) {
-            queue.add(packet)
-            emit("Aucun pair : message mis en attente (10 min)")
-            return 1
+            emit("Aucun pair : message privé non envoyé")
+            return 0
         }
-        val frame = textFrame(packet)
+        val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
+        seenSecret.add(msgId.toHex())
+        // Trame : type (1) + TTL (1) + identifiant du message (8) + expéditeur (8) + destinataire (8) + données chiffrées
+        val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) +
+            msgId + myId + toPeerId.hexToBytes() + CryptoEngine.encrypt(bytes, key)
         targets.forEach { sendTo(it, frame) }
         return targets.size
     }
 
     /**
-     * Envoie une photo ou un fichier, découpé en fragments.
-     * [toPeerId] : destinataire, ou null pour tout le monde.
-     * Chaque fragment porte l'expéditeur et le destinataire ; seul le destinataire l'affiche.
+     * Envoie une photo ou un vocal, découpé en fragments.
+     * Sans [toPeerId] : envoi public. Avec [toPeerId] : le contenu est chiffré avant découpage (voisin direct seulement).
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
         val targets = peers.values.toList()
         if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
+
+        val payload = if (toPeerId == null) {
+            bytes
+        } else {
+            val key = sharedKeyWith(toPeerId) ?: run {
+                emit("Clé de ce pair pas encore reçue : fichier non envoyé")
+                return 0
+            }
+            CryptoEngine.encrypt(bytes, key)
+        }
+
         val recipient = toPeerId?.hexToBytes() ?: ByteArray(MeshPacket.ID_SIZE)
-        val fragments = MeshChunker.split(MeshChunker.newContentId(), bytes)
+        val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
         // Trame : type (1) + expéditeur (8) + destinataire (8) + fragment
         val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT) + myId + recipient + it }
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
@@ -241,7 +276,7 @@ class BleMeshManager(private val context: Context) {
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
     }
 
-    /** Envoie au nouveau pair les messages qui attendaient. */
+    /** Envoie au nouveau pair les messages publics qui attendaient. */
     private fun sendQueuedTo(device: BluetoothDevice) {
         val pending = queue.drain()
         if (pending.isEmpty()) return
@@ -258,7 +293,7 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /** Premier octet = type de la trame : texte, fragment de fichier, ou clé publique. */
+    /** Premier octet = type de la trame. */
     private fun handleIncoming(fromAddress: String, value: ByteArray) {
         if (value.isEmpty()) return
         val body = value.copyOfRange(1, value.size)
@@ -266,6 +301,7 @@ class BleMeshManager(private val context: Context) {
             TYPE_TEXT -> handleText(fromAddress, body)
             TYPE_FRAGMENT -> handleFragment(body)
             TYPE_KEY -> handleKey(body)
+            TYPE_SECRET -> handleSecret(fromAddress, body)
             else -> emit("Message reçu inconnu")
         }
     }
@@ -284,25 +320,62 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Message reçu : affiché seulement s'il est pour tout le monde ou pour nous.
-     * Format de la ligne : « Reçu de <expéditeur> : texte » (public) ou « Reçu privé de <expéditeur> : texte ».
+     * Message privé chiffré. Le corps contient : TTL (1) + identifiant (8) + expéditeur (8) + destinataire (8) + données chiffrées.
+     * Si le message est pour nous, on le déchiffre. Sinon, on le relaie sans jamais pouvoir le lire.
+     */
+    private fun handleSecret(fromAddress: String, body: ByteArray) {
+        if (body.size < 1 + MeshPacket.ID_SIZE * 3 + 28) { emit("Message privé mal formé"); return }
+        val ttl = body[0].toInt() and 0xFF
+        val msgId = body.copyOfRange(1, 1 + MeshPacket.ID_SIZE)
+        val sender = body.copyOfRange(1 + MeshPacket.ID_SIZE, 1 + MeshPacket.ID_SIZE * 2)
+        val recipient = body.copyOfRange(1 + MeshPacket.ID_SIZE * 2, 1 + MeshPacket.ID_SIZE * 3)
+        val cipher = body.copyOfRange(1 + MeshPacket.ID_SIZE * 3, body.size)
+
+        // Même message reçu par plusieurs chemins : on ne le traite qu'une fois
+        if (!seenSecret.add(msgId.toHex())) return
+
+        if (recipient.contentEquals(myId)) {
+            val key = sharedKeyWith(sender.toHex()) ?: run {
+                emit("Message privé reçu sans clé : ignoré")
+                return
+            }
+            val plain = CryptoEngine.decrypt(cipher, key) ?: run {
+                emit("Message privé illisible (message altéré)")
+                return
+            }
+            emit("Reçu privé de ${sender.toHex()} : ${String(plain, Charsets.UTF_8)}")
+            return
+        }
+
+        // Pas pour nous : on relaie le message chiffré, sans l'ouvrir
+        if (ttl > 1) relaySecret(ttl - 1, msgId, sender, recipient, cipher, fromAddress)
+    }
+
+    /** Transmet un message privé chiffré à tous les pairs, sauf celui qui vient de nous l'envoyer. */
+    private fun relaySecret(ttl: Int, msgId: ByteArray, sender: ByteArray, recipient: ByteArray, cipher: ByteArray, exceptAddress: String) {
+        val targets = peers.values.filter { it.address != exceptAddress }
+        if (targets.isEmpty()) return
+        emit("Relais privé vers ${targets.size} pair(s) (TTL $ttl)")
+        val frame = byteArrayOf(TYPE_SECRET, ttl.toByte()) + msgId + sender + recipient + cipher
+        targets.forEach { sendTo(it, frame) }
+    }
+
+    /**
+     * Message public reçu : affiché pour tout le monde. Les messages publics sont relayés.
+     * Format de la ligne : « Reçu de <expéditeur> : texte ».
      */
     private fun handleText(fromAddress: String, body: ByteArray) {
         val packet = MeshPacket.decode(body)
         if (packet == null) { emit("Message reçu mal formé"); return }
         if (!seenIds.add(packet.id)) return
         val isPublic = packet.recipient.all { it == 0.toByte() }
-        val forMe = isPublic || packet.recipient.contentEquals(myId)
-        if (forMe) {
-            val tag = if (isPublic) "Reçu de" else "Reçu privé de"
-            emit("$tag ${packet.sender.toHex()} : ${packet.text}")
-        }
+        if (isPublic) emit("Reçu de ${packet.sender.toHex()} : ${packet.text}")
         if (packet.canRelay()) relay(packet.withDecrementedTtl(), exceptAddress = fromAddress)
     }
 
     /**
      * Reçoit un fragment. Le corps contient : expéditeur (8) + destinataire (8) + fragment.
-     * Un fichier qui ne nous est pas destiné est ignoré.
+     * Un contenu privé est déchiffré une fois complet. Un contenu qui ne nous est pas destiné est ignoré.
      */
     private fun handleFragment(body: ByteArray) {
         assemblies.entries.removeIf { it.value.isExpired() }
@@ -317,16 +390,26 @@ class BleMeshManager(private val context: Context) {
         assembly.add(part.first, part.second)
         if (assembly.isComplete()) {
             assemblies.remove(key)
-            val bytes = assembly.assemble()
+            var bytes = assembly.assemble()
+            var from: String? = null
+            if (!isPublic) {
+                val secret = sharedKeyWith(sender.toHex()) ?: run {
+                    emit("Fichier privé reçu sans clé : ignoré")
+                    return
+                }
+                bytes = CryptoEngine.decrypt(bytes, secret) ?: run {
+                    emit("Fichier privé illisible (fichier altéré)")
+                    return
+                }
+                from = sender.toHex()
+            }
             emit("Fichier reçu : ${bytes.size} octets")
-            // null = conversation générale ; sinon identifiant de l'expéditeur pour une discussion privée
-            val from = if (isPublic) null else sender.toHex()
             val receive = blobListener
             if (receive != null) main.post { receive(bytes, from) }
         }
     }
 
-    /** Transmet un texte à tous les pairs, sauf celui qui vient de nous l'envoyer. */
+    /** Transmet un texte public à tous les pairs, sauf celui qui vient de nous l'envoyer. */
     private fun relay(packet: MeshPacket, exceptAddress: String) {
         val targets = peers.values.filter { it.address != exceptAddress }
         if (targets.isEmpty()) return
@@ -356,9 +439,11 @@ class BleMeshManager(private val context: Context) {
     companion object {
         private const val TAG = "MeshChatBLE"
         private const val MAX_TEXT_BYTES = 200
+        private const val MAX_PRIVATE_BYTES = 180
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
+        private const val TYPE_SECRET: Byte = 4
         /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
         const val COMPANY_ID = 0xFFFE
         @Volatile var instance: BleMeshManager? = null
