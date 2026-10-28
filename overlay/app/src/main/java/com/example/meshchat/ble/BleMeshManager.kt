@@ -32,10 +32,22 @@ class BleMeshManager(private val context: Context) {
     private val queue = MeshQueue()
     private val main = Handler(Looper.getMainLooper())
 
-    /** Identifiant fixe de ce téléphone, envoyé dans chaque message et dans la réponse au scan. */
-    val myId: ByteArray = MeshPacket.newPeerId()
+    /** Identifiant fixe de ce téléphone, gardé entre les lancements. */
+    val myId: ByteArray = loadOrCreateId()
 
     init { instance = this }
+
+    /** Lit l'identifiant enregistré sur le téléphone, ou en crée un la première fois. */
+    private fun loadOrCreateId(): ByteArray {
+        val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
+        val saved = prefs.getString("my_id", null)
+        if (saved != null && saved.length == MeshPacket.ID_SIZE * 2) {
+            return saved.hexToBytes()
+        }
+        val fresh = MeshPacket.newPeerId()
+        prefs.edit().putString("my_id", fresh.toHex()).apply()
+        return fresh
+    }
 
     private fun emit(msg: String) {
         Log.i(TAG, msg)
