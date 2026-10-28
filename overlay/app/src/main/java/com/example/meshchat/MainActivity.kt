@@ -53,6 +53,7 @@ import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
+import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -311,6 +312,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder(context) }
+    val wifiStatus = remember { WifiAwareSupport.status(context) }
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -539,6 +541,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
