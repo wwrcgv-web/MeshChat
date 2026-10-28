@@ -57,6 +57,9 @@ import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.delay
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
@@ -183,10 +186,14 @@ private const val PUBLIC = "public"
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
 
+/** Date et heure actuelles, par exemple « 27 oct. 12:11 ». */
+private fun nowText(): String = SimpleDateFormat("dd MMM HH:mm", Locale.FRANCE).format(Date())
+
 /**
  * Une bulle de conversation.
  * chat = PUBLIC pour la conversation générale, ou l'identifiant complet du téléphone pour une discussion privée.
  * audio = chemin du fichier vocal, si la bulle contient un vocal.
+ * time = date et heure d'affichage. status = « ✓ Envoyé » pour mes messages qui ont bien été transmis.
  */
 private data class Bubble(
     val mine: Boolean,
@@ -194,7 +201,9 @@ private data class Bubble(
     val text: String,
     val image: Bitmap? = null,
     val chat: String,
-    val audio: String? = null
+    val audio: String? = null,
+    val time: String = nowText(),
+    val status: String? = null
 )
 
 /** Titre affiché au-dessus d'une bulle. */
@@ -275,9 +284,9 @@ private fun MicButton(recording: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun CircleButton(label: String, background: Color, textColor: Color, onClick: () -> Unit) {
+private fun CircleButton(label: String, background: Color, textColor: Color, size: Dp = 44.dp, onClick: () -> Unit) {
     Box(
-        modifier = Modifier.size(44.dp).clip(CircleShape).background(background).clickable(onClick = onClick),
+        modifier = Modifier.size(size).clip(CircleShape).background(background).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Text(label, color = textColor, fontSize = 18.sp)
@@ -475,14 +484,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (draft.isNotBlank()) {
             val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", draft, null, selectedChat)
+                bubbles = bubbles + Bubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé")
                 draft = ""
             }
         }
         pendingPhoto?.let { photo ->
             val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, selectedChat)
+                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé")
                 pendingPhoto = null
             }
         }
@@ -516,7 +525,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (sent > 0) {
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
-            bubbles = bubbles + Bubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath)
+            bubbles = bubbles + Bubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath, status = "✓ Envoyé")
         }
     }
 
@@ -739,29 +748,50 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 fontFamily = FontFamily.Monospace
             )
 
-            // Conversation (seulement les messages de la discussion choisie)
-            LazyColumn(state = chatState, modifier = Modifier.weight(1f).fillMaxWidth()) {
-                items(visible) { b ->
-                    Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                        contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
+            // Conversation : message « Aucun appareil détecté » si personne n'est à portée, sinon les bulles
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                if (visible.isEmpty() && peers.isEmpty()) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(top = 40.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
-                            Column(Modifier.padding(10.dp)) {
-                                Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                b.image?.let { img ->
-                                    Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
+                        Text("👥", fontSize = 40.sp)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Aucun appareil détecté", color = inkColor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(4.dp))
+                        Text("Activez MeshChat sur un autre téléphone à proximité.", color = grey, fontSize = 13.sp)
+                    }
+                } else {
+                    LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
+                        items(visible) { b ->
+                            Box(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
+                            ) {
+                                Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
+                                    Column(Modifier.padding(10.dp)) {
+                                        Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        b.image?.let { img ->
+                                            Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
+                                        }
+                                        b.audio?.let { path ->
+                                            Text(
+                                                "▶ Écouter le vocal",
+                                                color = green,
+                                                fontSize = 14.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable { VoiceRecorder.play(path) }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        Text(b.text, color = inkColor, fontSize = 15.sp)
+                                        Text(
+                                            b.time + (b.status?.let { "  $it" } ?: ""),
+                                            color = grey,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
                                 }
-                                b.audio?.let { path ->
-                                    Text(
-                                        "▶ Écouter le vocal",
-                                        color = green,
-                                        fontSize = 14.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        modifier = Modifier.clickable { VoiceRecorder.play(path) }.padding(vertical = 4.dp)
-                                    )
-                                }
-                                Text(b.text, color = inkColor, fontSize = 15.sp)
                             }
                         }
                     }
@@ -821,7 +851,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     CircleButton("📷", lightGrey, inkColor) { showPicker = true }
                     Spacer(Modifier.width(6.dp))
                     if (canSend) {
-                        CircleButton("➤", green, Color.White) { send() }
+                        // Bouton d'envoi plus grand et bien visible
+                        CircleButton("➤", green, Color.White, size = 50.dp) { send() }
                     } else {
                         MicButton(recording) { onMicTap() }
                     }
