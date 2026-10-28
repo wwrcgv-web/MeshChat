@@ -193,7 +193,8 @@ private fun nowText(): String = SimpleDateFormat("dd MMM HH:mm", Locale.FRANCE).
  * Une bulle de conversation.
  * chat = PUBLIC pour la conversation générale, ou l'identifiant complet du téléphone pour une discussion privée.
  * audio = chemin du fichier vocal, si la bulle contient un vocal.
- * time = date et heure d'affichage. status = « ✓ Envoyé » pour mes messages qui ont bien été transmis.
+ * status = « ✓ Envoyé », « ✓✓ Reçu » ou « ✓✓ Lu » pour mes messages privés.
+ * msgId = identifiant du message privé, pour retrouver ses accusés.
  */
 private data class Bubble(
     val mine: Boolean,
@@ -203,7 +204,8 @@ private data class Bubble(
     val chat: String,
     val audio: String? = null,
     val time: String = nowText(),
-    val status: String? = null
+    val status: String? = null,
+    val msgId: String? = null
 )
 
 /** Titre affiché au-dessus d'une bulle. */
@@ -372,6 +374,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         }
     }
 
+    // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
+    LaunchedEffect(selectedChat) {
+        if (selectedChat != PUBLIC) BleMeshManager.instance?.markRead(selectedChat)
+    }
+
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
         if (bitmap != null) pendingPhoto = bitmap
@@ -393,6 +400,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 line.startsWith("Mon identifiant : ") -> {
                     pseudo = pseudoFrom(line.removePrefix("Mon identifiant : ").trim())
                     journal = journal + line
+                }
+                line.startsWith("Statut ") -> {
+                    // Accusé : « Statut <identifiant> reçu » ou « Statut <identifiant> lu »
+                    val rest = line.removePrefix("Statut ")
+                    val id = rest.substringBefore(" ")
+                    val newStatus = if (rest.endsWith("lu")) "✓✓ Lu" else "✓✓ Reçu"
+                    bubbles = bubbles.map { b ->
+                        if (b.msgId == id && b.status != "✓✓ Lu") b.copy(status = newStatus) else b
+                    }
                 }
                 line.startsWith("Reçu privé de ") -> {
                     count("in_text")
@@ -484,7 +500,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (draft.isNotBlank()) {
             val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé")
+                // Pour un message privé, on garde son identifiant pour recevoir ses accusés
+                bubbles = bubbles + Bubble(
+                    true, "moi", draft, null, selectedChat,
+                    status = "✓ Envoyé",
+                    msgId = manager.lastSentId
+                )
                 draft = ""
             }
         }
@@ -851,7 +872,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     CircleButton("📷", lightGrey, inkColor) { showPicker = true }
                     Spacer(Modifier.width(6.dp))
                     if (canSend) {
-                        // Bouton d'envoi plus grand et bien visible
                         CircleButton("➤", green, Color.White, size = 50.dp) { send() }
                     } else {
                         MicButton(recording) { onMicTap() }
