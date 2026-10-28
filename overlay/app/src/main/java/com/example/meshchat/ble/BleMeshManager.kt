@@ -8,8 +8,12 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.example.meshchat.crypto.CryptoEngine
+import java.security.KeyPair
+import java.security.PublicKey
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import javax.crypto.SecretKey
 
 /** Un téléphone trouvé, identifié par son identifiant MeshChat (16 caractères hexadécimaux). */
 data class MeshPeer(val id: String)
@@ -27,6 +31,7 @@ class BleMeshManager(private val context: Context) {
     private var scanning = false
     private val peers = ConcurrentHashMap<String, BluetoothDevice>()   // adresse Bluetooth -> appareil
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
+    private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique reçue
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val queue = MeshQueue()
@@ -34,6 +39,9 @@ class BleMeshManager(private val context: Context) {
 
     /** Identifiant fixe de ce téléphone, gardé entre les lancements. */
     val myId: ByteArray = loadOrCreateId()
+
+    /** Paire de clés de ce téléphone (la clé privée ne quitte jamais le téléphone). */
+    private val keyPair: KeyPair = CryptoEngine.newKeyPair()
 
     init { instance = this }
 
@@ -58,6 +66,15 @@ class BleMeshManager(private val context: Context) {
     private fun publishPeers() {
         val list = peerIds.values.distinct().sorted().map { MeshPeer(it) }
         main.post { peersListener?.invoke(list) }
+    }
+
+    /** Vrai si la clé de ce téléphone a bien été reçue. */
+    fun hasKeyFor(peerId: String): Boolean = peerKeys.containsKey(peerId)
+
+    /** Secret commun avec ce téléphone, ou null si sa clé n'a pas encore été reçue. */
+    fun sharedKeyWith(peerId: String): SecretKey? {
+        val theirs = peerKeys[peerId] ?: return null
+        return CryptoEngine.sharedKey(keyPair.private, theirs)
     }
 
     fun startAdvertising() {
@@ -144,6 +161,9 @@ class BleMeshManager(private val context: Context) {
 
     private fun textFrame(packet: MeshPacket): ByteArray = byteArrayOf(TYPE_TEXT) + packet.encode()
 
+    /** Trame d'échange de clé : type (1) + mon identifiant (8) + ma clé publique. */
+    private fun keyFrame(): ByteArray = byteArrayOf(TYPE_KEY) + myId + CryptoEngine.encodePublic(keyPair.public)
+
     private fun sendTo(device: BluetoothDevice, frame: ByteArray) = sendFramesTo(device, listOf(frame))
 
     /** Ouvre une connexion et envoie les trames une par une, en attendant la confirmation de chaque envoi. */
@@ -212,6 +232,8 @@ class BleMeshManager(private val context: Context) {
                     }
                     emit("Pair trouvé : ${id.take(8)}")
                     publishPeers()
+                    // Premier échange : on envoie notre clé publique au nouveau téléphone
+                    sendTo(r.device, keyFrame())
                     sendQueuedTo(r.device)
                 }
             }
@@ -236,14 +258,28 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /** Premier octet = type de la trame : texte ou fragment de fichier. */
+    /** Premier octet = type de la trame : texte, fragment de fichier, ou clé publique. */
     private fun handleIncoming(fromAddress: String, value: ByteArray) {
         if (value.isEmpty()) return
         val body = value.copyOfRange(1, value.size)
         when (value[0]) {
             TYPE_TEXT -> handleText(fromAddress, body)
             TYPE_FRAGMENT -> handleFragment(body)
+            TYPE_KEY -> handleKey(body)
             else -> emit("Message reçu inconnu")
+        }
+    }
+
+    /** Reçoit la clé publique d'un téléphone et la garde pour le chiffrement. */
+    private fun handleKey(body: ByteArray) {
+        if (body.size <= MeshPacket.ID_SIZE) { emit("Clé mal formée"); return }
+        val senderId = body.copyOfRange(0, MeshPacket.ID_SIZE).toHex()
+        val publicBytes = body.copyOfRange(MeshPacket.ID_SIZE, body.size)
+        try {
+            peerKeys[senderId] = CryptoEngine.decodePublic(publicBytes)
+            emit("Clé reçue de ${senderId.take(8)}")
+        } catch (e: Exception) {
+            emit("Clé invalide reçue de ${senderId.take(8)}")
         }
     }
 
@@ -311,6 +347,7 @@ class BleMeshManager(private val context: Context) {
         scanning = false; advertising = false; server = null
         peers.clear()
         peerIds.clear()
+        peerKeys.clear()
         assemblies.clear()
         publishPeers()
         instance = null
@@ -321,6 +358,7 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_TEXT_BYTES = 200
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
+        private const val TYPE_KEY: Byte = 3
         /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
         const val COMPANY_ID = 0xFFFE
         @Volatile var instance: BleMeshManager? = null
