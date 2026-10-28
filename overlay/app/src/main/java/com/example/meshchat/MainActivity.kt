@@ -296,10 +296,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             // Si la discussion choisie n'est plus à portée, on revient à « Tous »
             if (selectedChat != PUBLIC && list.none { it.id == selectedChat }) selectedChat = PUBLIC
         }
-        // Fichier complet reçu : on le décode et on l'affiche comme une photo reçue dans « Tous »
-        BleMeshManager.blobListener = { bytes ->
+        // Photo complète reçue : affichée dans « Tous » si elle est publique, sinon dans la discussion de l'expéditeur
+        BleMeshManager.blobListener = { bytes, from ->
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.let { photo ->
-                bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
+                if (from == null) {
+                    bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
+                } else {
+                    bubbles = bubbles + Bubble(false, from, "Photo reçue", photo, from)
+                }
             }
         }
         onDispose {
@@ -316,26 +320,25 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    /** Envoie le texte (au téléphone choisi, ou à tous) et/ou la photo en aperçu. */
+    /** Envoie le texte et/ou la photo (au téléphone choisi, ou à tous). */
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
             journal = journal + "Service non activé : activez le service"
             return
         }
+        val target = if (selectedChat == PUBLIC) null else selectedChat
         if (draft.isNotBlank()) {
-            val target = if (selectedChat == PUBLIC) null else selectedChat
             val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
                 bubbles = bubbles + Bubble(true, "moi", draft, null, selectedChat)
                 draft = ""
             }
         }
-        // Les photos vont à tous pour l'instant
         pendingPhoto?.let { photo ->
-            val sent = manager.sendBlob(compressPhoto(photo))
+            val sent = manager.sendBlob(compressPhoto(photo), target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, PUBLIC)
+                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, selectedChat)
                 pendingPhoto = null
             }
         }
@@ -345,7 +348,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
             title = { Text("Ajouter une photo") },
-            text = { Text("Que voulez-vous faire ? (la photo est envoyée à tous)") },
+            text = { Text("Que voulez-vous faire ?") },
             confirmButton = {
                 TextButton(onClick = { showPicker = false; cameraLauncher.launch(null) }) { Text("Prendre une photo") }
             },
