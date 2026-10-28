@@ -53,7 +53,6 @@ import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
-import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -249,14 +248,12 @@ private fun MicButton(recording: Boolean, onClick: () -> Unit) {
         Canvas(modifier = Modifier.size(22.dp)) {
             val w = size.width
             val h = size.height
-            // Capsule du micro
             drawRoundRect(
                 color = fg,
                 topLeft = Offset(w * 0.30f, 0f),
                 size = Size(w * 0.40f, h * 0.56f),
                 cornerRadius = CornerRadius(w * 0.20f)
             )
-            // Arc autour de la capsule
             drawArc(
                 color = fg,
                 startAngle = 0f,
@@ -266,7 +263,6 @@ private fun MicButton(recording: Boolean, onClick: () -> Unit) {
                 size = Size(w * 0.70f, h * 0.50f),
                 style = Stroke(width = w * 0.08f)
             )
-            // Pied et base
             drawLine(fg, Offset(w * 0.5f, h * 0.80f), Offset(w * 0.5f, h * 0.95f), strokeWidth = w * 0.08f)
             drawLine(fg, Offset(w * 0.30f, h * 0.95f), Offset(w * 0.70f, h * 0.95f), strokeWidth = w * 0.08f)
         }
@@ -315,7 +311,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder(context) }
-    val wifiStatus = remember { WifiAwareSupport.status(context) }
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -544,7 +539,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
