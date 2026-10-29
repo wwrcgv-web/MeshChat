@@ -651,7 +651,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                         Spacer(Modifier.height(8.dp))
                         Text("Aucun appareil détecté", color = inkColor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
-                        Text("Activez MeshChat sur un autre téléphone à proximité.", color = grey, fontSize = 13.sp)
+                        Text("Activez Samchat sur un autre téléphone à proximité.", color = grey, fontSize = 13.sp)
                     }
                 } else {
                     LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
