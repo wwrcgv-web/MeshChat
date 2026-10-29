@@ -19,9 +19,9 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 
 /**
- * Transfert des photos, vocaux, fichiers et vidéos par Wi-Fi Aware.
+ * Transfert par Wi-Fi Aware : photos, vocaux, fichiers, vidéos et morceaux de voix en direct.
  * Chaque téléphone ouvre un serveur TCP, puis garde un lien de données avec chaque voisin trouvé.
- * Trame envoyée : drapeau public/privé (1 octet) + taille (4 octets) + contenu.
+ * Trame envoyée : drapeau (1 octet) + taille (4 octets) + contenu.
  * Le receveur répond 1 octet (1) quand il a tout reçu : l'envoyeur sait alors que c'est arrivé.
  */
 @SuppressLint("MissingPermission")
@@ -174,11 +174,41 @@ class WifiAwareTransfer(
     }
 
     /**
+     * Envoi d'un morceau de voix : immédiat, sans journal, une seule tentative.
+     * Retourne true si le contact a bien reçu le morceau.
+     */
+    private fun sendLiveNow(payload: ByteArray, toPeerId: String): Boolean {
+        val link = links[toPeerId]?.takeIf { it.ready() } ?: return false
+        val network = link.network ?: return false
+        val addr = link.addr ?: return false
+        return try {
+            Socket().use { s ->
+                network.bindSocket(s)
+                s.connect(InetSocketAddress(addr, link.port), LIVE_CONNECT_MS)
+                s.soTimeout = LIVE_READ_MS
+                val out = DataOutputStream(s.getOutputStream().buffered())
+                out.writeByte(LIVE_FLAG)
+                out.writeInt(payload.size)
+                out.write(payload)
+                out.flush()
+                s.getInputStream().read() == 1
+            }
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
      * Envoie à un voisin (ou à tous si [toPeerId] est null).
+     * Pour le live (drapeau 2), l'envoi est immédiat et ne concerne qu'un seul contact.
      * Retourne le nombre de voisins joignables tout de suite. 0 = repli Bluetooth.
-     * L'envoi lui-même se fait en arrière-plan.
+     * L'envoi lui-même se fait en arrière-plan, sauf pour le live.
      */
     fun sendBlob(flag: Int, payload: ByteArray, toPeerId: String?): Int {
+        if (flag == LIVE_FLAG) {
+            val target = toPeerId ?: return 0
+            return if (sendLiveNow(payload, target)) 1 else 0
+        }
         val ids = if (toPeerId == null) links.keys.toList() else listOf(toPeerId)
         val ready = ids.mapNotNull { id -> links[id]?.takeIf { it.ready() }?.let { Pair(id, it) } }
         if (ready.isEmpty()) return 0
@@ -202,5 +232,10 @@ class WifiAwareTransfer(
         private const val CONNECT_MS = 10_000
         private const val READ_MS = 60_000
         private const val MAX_BYTES = 64 * 1024 * 1024
+        /** Drapeau réservé au live. Doit rester identique à FLAG_LIVE dans BleMeshManager. */
+        const val LIVE_FLAG = 2
+        /** Live : délais courts, un morceau arrivé trop tard ne sert plus à rien. */
+        private const val LIVE_CONNECT_MS = 2_000
+        private const val LIVE_READ_MS = 3_000
     }
 }
