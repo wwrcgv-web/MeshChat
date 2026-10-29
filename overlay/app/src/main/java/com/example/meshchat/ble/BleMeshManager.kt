@@ -46,6 +46,7 @@ class BleMeshManager(private val context: Context) {
     private val assemblies = ConcurrentHashMap<String, MeshChunker.Assembly>()
     private val pendingRead = ConcurrentHashMap<String, MutableList<String>>()    // expéditeur -> messages reçus non lus
     private val queue = MeshQueue()
+    private val store = MeshStore()
     private val main = Handler(Looper.getMainLooper())
 
     /** Identifiant du dernier message privé envoyé (pour suivre ses accusés). Null pour un message public. */
@@ -223,15 +224,18 @@ class BleMeshManager(private val context: Context) {
             return 0
         }
         val targets = peers.values.toList()
-        if (targets.isEmpty()) {
-            emit("Aucun pair : message privé non envoyé")
-            return 0
-        }
         val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(msgId.toHex())
         lastSentId = msgId.toHex()
-        // Trame : type (1) + TTL (1) + identifiant aléatoire (8) + données chiffrées (qui contiennent aussi l'expéditeur, caché)
-        val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) + msgId + CryptoEngine.encrypt(bytes, key)
+        val tag = MeshStore.tagFor(toPeerId)
+        val cipher = CryptoEngine.encrypt(bytes, key)
+        store.add(msgId, tag, cipher)
+        if (targets.isEmpty()) {
+            emit("Aucun pair : message privé gardé en attente (10 min)")
+            return 1
+        }
+        // Trame : type (1) + TTL (1) + identifiant (8) + étiquette (8) + données chiffrées
+        val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) + msgId + tag + cipher
         targets.forEach { sendTo(it, frame) }
         return targets.size
     }
@@ -343,8 +347,8 @@ class BleMeshManager(private val context: Context) {
                     }
                     emit("Pair trouvé : ${id.take(8)}")
                     publishPeers()
-                    // Premier échange : on envoie notre clé publique au nouveau téléphone
-                    sendTo(r.device, keyFrame())
+                    // Premier échange : on envoie notre clé publique, puis les messages gardés pour ce pair
+                    sendFramesTo(r.device, listOf(keyFrame()) + storedFramesFor(id))
                     sendQueuedTo(r.device)
                 }
             }
@@ -402,17 +406,19 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Message privé chiffré. Le corps contient : TTL (1) + identifiant aléatoire (8) + données chiffrées.
+     * Message privé chiffré. Le corps contient : TTL (1) + identifiant aléatoire (8) + étiquette (8) + données chiffrées.
      * Si on peut le déchiffrer, il est pour nous : on affiche, on envoie l'accusé « Reçu ».
-     * Dans tous les cas, on le relaie sans l'ouvrir.
+     * Sinon, on le garde dans la réserve pour le livrer plus tard. Dans tous les cas, on le relaie.
      */
     private fun handleSecret(fromAddress: String, body: ByteArray) {
-        if (body.size < 1 + MeshPacket.ID_SIZE + 28) { emit("Message privé mal formé"); return }
+        val idSize = MeshPacket.ID_SIZE
+        val tagSize = MeshStore.TAG_SIZE
+        if (body.size < 1 + idSize + tagSize + 28) { emit("Message privé mal formé"); return }
         val ttl = body[0].toInt() and 0xFF
-        val msgId = body.copyOfRange(1, 1 + MeshPacket.ID_SIZE)
-        val cipher = body.copyOfRange(1 + MeshPacket.ID_SIZE, body.size)
+        val msgId = body.copyOfRange(1, 1 + idSize)
+        val tag = body.copyOfRange(1 + idSize, 1 + idSize + tagSize)
+        val cipher = body.copyOfRange(1 + idSize + tagSize, body.size)
 
-        // Même message reçu par plusieurs chemins : on ne le traite qu'une fois
         if (!seenSecret.add(msgId.toHex())) return
 
         val opened = openForMe(cipher)
@@ -420,19 +426,27 @@ class BleMeshManager(private val context: Context) {
             emit("Reçu privé de ${opened.first} : ${String(opened.second, Charsets.UTF_8)}")
             pendingRead.getOrPut(opened.first) { mutableListOf() }.add(msgId.toHex())
             sendAck(opened.first, msgId, KIND_RECEIVED)
+        } else {
+            store.add(msgId, tag, cipher)
         }
 
-        // On relaie dans tous les cas : un intermédiaire ne peut pas savoir si c'est pour lui
-        if (ttl > 1) relaySecret(ttl - 1, msgId, cipher, fromAddress)
+        if (ttl > 1) relaySecret(ttl - 1, msgId, tag, cipher, fromAddress)
     }
 
     /** Transmet un message privé chiffré à tous les pairs, sauf celui qui vient de nous l'envoyer. */
-    private fun relaySecret(ttl: Int, msgId: ByteArray, cipher: ByteArray, exceptAddress: String) {
+    private fun relaySecret(ttl: Int, msgId: ByteArray, tag: ByteArray, cipher: ByteArray, exceptAddress: String) {
         val targets = peers.values.filter { it.address != exceptAddress }
         if (targets.isEmpty()) return
         emit("Relais privé vers ${targets.size} pair(s) (TTL $ttl)")
-        val frame = byteArrayOf(TYPE_SECRET, ttl.toByte()) + msgId + cipher
+        val frame = byteArrayOf(TYPE_SECRET, ttl.toByte()) + msgId + tag + cipher
         targets.forEach { sendTo(it, frame) }
+    }
+
+    /** Trames gardées pour ce téléphone : à envoyer dès qu'il apparaît. */
+    private fun storedFramesFor(peerId: String): List<ByteArray> {
+        val items = store.forTag(MeshStore.tagFor(peerId))
+        if (items.isNotEmpty()) emit("Livraison de ${items.size} message(s) gardé(s) à ${peerId.take(8)}")
+        return items.map { byteArrayOf(TYPE_SECRET, 1.toByte()) + it.id + it.tag + it.cipher }
     }
 
     /**
