@@ -1,6 +1,8 @@
 package com.example.meshchat
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -10,6 +12,8 @@ import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -19,16 +23,19 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +47,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -56,6 +64,8 @@ import com.example.meshchat.service.MeshService
 import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.MessageDigest
+import kotlinx.coroutines.withTimeoutOrNull
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
 class VoiceRecorder(private val context: Context) {
@@ -116,10 +126,99 @@ class VoiceRecorder(private val context: Context) {
     }
 }
 
+/**
+ * Enregistre le micro par segments d'une seconde. Chaque segment est un fichier audio complet,
+ * remis à [onSegment] dès qu'il est fini, puis un nouveau segment démarre aussitôt.
+ */
+private class LiveStreamer(
+    private val context: Context,
+    private val onSegment: (ByteArray) -> Unit
+) {
+    private val handler = Handler(Looper.getMainLooper())
+    private var recorder: MediaRecorder? = null
+    private var currentFile: File? = null
+    private var running = false
+    private var counter = 0
+
+    /** Démarre le premier segment. Retourne false si le micro n'est pas disponible. */
+    fun start(): Boolean {
+        if (!startSegment()) return false
+        running = true
+        handler.postDelayed(rotate, SEGMENT_MS)
+        return true
+    }
+
+    private val rotate = object : Runnable {
+        override fun run() {
+            if (!running) return
+            stopSegment()?.takeIf { it.isNotEmpty() }?.let { onSegment(it) }
+            if (startSegment()) {
+                handler.postDelayed(this, SEGMENT_MS)
+            } else {
+                running = false
+            }
+        }
+    }
+
+    /** Arrête le live et envoie le dernier segment. */
+    fun stop() {
+        if (!running) return
+        running = false
+        handler.removeCallbacks(rotate)
+        stopSegment()?.takeIf { it.isNotEmpty() }?.let { onSegment(it) }
+    }
+
+    private fun startSegment(): Boolean {
+        counter++
+        val out = File(context.cacheDir, "live_envoi_$counter.m4a")
+        currentFile = out
+        @Suppress("DEPRECATION")
+        val rec = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else MediaRecorder()
+        return try {
+            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            rec.setAudioEncodingBitRate(12_000)
+            rec.setAudioSamplingRate(16_000)
+            rec.setAudioChannels(1)
+            rec.setOutputFile(out.absolutePath)
+            rec.prepare()
+            rec.start()
+            recorder = rec
+            true
+        } catch (e: Exception) {
+            rec.release()
+            false
+        }
+    }
+
+    /** Termine le segment en cours, lit son contenu, puis supprime le fichier. */
+    private fun stopSegment(): ByteArray? {
+        val rec = recorder ?: return null
+        recorder = null
+        val file = currentFile
+        return try {
+            rec.stop()
+            file?.readBytes()
+        } catch (e: Exception) {
+            null
+        } finally {
+            rec.release()
+            file?.delete()
+        }
+    }
+
+    companion object {
+        private const val SEGMENT_MS = 1_000L
+    }
+}
+
 /** Réglages de l'écran (l'état du service vient de BleMeshManager). */
 object AppState {
     var serviceOn by mutableStateOf(false)
     var runInBackground by mutableStateOf(true)
+    /** Live push-to-talk : maintenir le micro pour parler en direct. Gardé entre les lancements. */
+    var liveOn by mutableStateOf(false)
 }
 
 class MainActivity : ComponentActivity() {
@@ -130,6 +229,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppState.liveOn = getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean("live_on", false)
         setContent {
             MeshHome(
                 onStart = { askPermissions() },
@@ -187,6 +287,9 @@ private const val PUBLIC = "public"
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
 
+/** Durée d'appui à partir de laquelle un appui devient du live. En dessous, c'est un appui bref (vocal classique). */
+private const val HOLD_MS = 350L
+
 /** Titre affiché au-dessus d'une bulle : le nom du contact, ou anonXXXX tant qu'on ne le connaît pas. */
 private fun bubbleTitle(b: ChatBubble): String = when {
     b.mine -> "Moi"
@@ -204,6 +307,64 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     val out = ByteArrayOutputStream()
     small.compress(Bitmap.CompressFormat.JPEG, 40, out)
     return out.toByteArray()
+}
+
+/** Informations de distribution de cette copie, affichées dans les outils de debug. */
+private class DistributionInfo(val version: String, val installer: String, val fingerprint: String)
+
+/** Lit la version, l'installateur et l'empreinte SHA-256 du certificat qui a signé cette copie. */
+private fun readDistribution(context: Context): DistributionInfo {
+    val pm = context.packageManager
+    val pkg = context.packageName
+
+    val version = try {
+        @Suppress("DEPRECATION")
+        val info = pm.getPackageInfo(pkg, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+        "${info.versionName ?: "?"} ($code)"
+    } catch (e: Exception) {
+        "indisponible"
+    }
+
+    val installer = try {
+        val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            pm.getInstallSourceInfo(pkg).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstallerPackageName(pkg)
+        }
+        name ?: "inconnue (installation manuelle)"
+    } catch (e: Exception) {
+        "inconnue"
+    }
+
+    val fingerprint = signingBytes(context)?.let { bytes ->
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
+    } ?: "indisponible"
+
+    return DistributionInfo(version, installer, fingerprint)
+}
+
+/** Certificat qui a signé l'application, en octets. Null si Android ne le fournit pas. */
+@Suppress("DEPRECATION")
+private fun signingBytes(context: Context): ByteArray? = try {
+    val pm = context.packageManager
+    val pkg = context.packageName
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+        info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+    } else {
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES)
+        info.signatures?.firstOrNull()?.toByteArray()
+    }
+} catch (e: Exception) {
+    null
+}
+
+/** Copie un texte dans le presse-papiers du téléphone. */
+private fun copyToClipboard(context: Context, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("empreinte", text))
 }
 
 /** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
@@ -225,13 +386,43 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     }
 }
 
-/** Bouton micro : blanc avec un micro noir, comme sur la capture. Rouge pendant l'enregistrement. */
+/**
+ * Bouton micro. Appui bref : vocal classique (démarrer, puis arrêter et envoyer).
+ * Avec le live activé : appui maintenu = parler en direct, le relâcher arrête.
+ */
 @Composable
-private fun MicButton(recording: Boolean, onClick: () -> Unit) {
+private fun MicButton(
+    recording: Boolean,
+    live: Boolean,
+    onTap: () -> Unit,
+    onHoldStart: () -> Unit,
+    onHoldEnd: () -> Unit
+) {
     val bg = if (recording) Color(0xFFDC2626) else Color.White
     val fg = if (recording) Color.White else Color.Black
     Box(
-        modifier = Modifier.size(44.dp).clip(CircleShape).background(bg).clickable(onClick = onClick),
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(bg)
+            .pointerInput(live) {
+                detectTapGestures(
+                    onPress = {
+                        if (!live) {
+                            if (tryAwaitRelease()) onTap()
+                        } else {
+                            val released = withTimeoutOrNull(HOLD_MS) { tryAwaitRelease() }
+                            if (released == null) {
+                                onHoldStart()
+                                tryAwaitRelease()
+                                onHoldEnd()
+                            } else if (released) {
+                                onTap()
+                            }
+                        }
+                    }
+                )
+            },
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.size(22.dp)) {
@@ -297,6 +488,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var showDebug by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
+    var liveHolding by remember { mutableStateOf(false) }
+    var liveStreamer by remember { mutableStateOf<LiveStreamer?>(null) }
     var nameInput by remember { mutableStateOf("") }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
@@ -304,6 +497,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var myName by remember { mutableStateOf(prefs.getString("my_name", "") ?: "") }
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
+    val dist = remember { readDistribution(context) }
 
     // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
@@ -432,10 +626,16 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
 
     // Permission du micro : demandée la première fois qu'on appuie sur le micro
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startVoice() else log("Micro refusé dans les réglages du téléphone")
+        if (!granted) {
+            log("Micro refusé dans les réglages du téléphone")
+        } else if (AppState.liveOn) {
+            log("Micro autorisé : maintenez le bouton pour parler")
+        } else {
+            startVoice()
+        }
     }
 
-    /** Un appui sur le micro : démarre, ou arrête et envoie. */
+    /** Un appui bref sur le micro : démarre le vocal classique, ou l'arrête et l'envoie. */
     fun onMicTap() {
         if (recording) {
             stopAndSendVoice()
@@ -444,6 +644,46 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         } else {
             micPermission.launch(Manifest.permission.RECORD_AUDIO)
         }
+    }
+
+    /** Démarre le live : le micro est envoyé par segments d'une seconde au contact choisi. */
+    fun startLive() {
+        if (BleMeshManager.instance == null) {
+            log("Service non activé : activez le service")
+            return
+        }
+        val target = selectedChat
+        if (target == PUBLIC) {
+            log("Live : choisissez un contact dans la liste")
+            return
+        }
+        if (MeshState.peers.none { it.id == target }) {
+            log("Live : ${MeshState.nameOf(target)} n'est pas à portée")
+            return
+        }
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            return
+        }
+        val streamer = LiveStreamer(context) { bytes ->
+            BleMeshManager.instance?.sendLive(bytes, target)
+        }
+        if (streamer.start()) {
+            liveStreamer = streamer
+            liveHolding = true
+            log("Live : envoi à ${MeshState.nameOf(target)}")
+        } else {
+            log("Micro indisponible")
+        }
+    }
+
+    /** Arrête le live quand le bouton est relâché. */
+    fun stopLive() {
+        val streamer = liveStreamer ?: return
+        liveStreamer = null
+        liveHolding = false
+        streamer.stop()
+        log("Live : fin")
     }
 
     // Premier lancement : le nom est demandé, et il est obligatoire
@@ -485,7 +725,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         )
     }
 
-    // Panneau Debug : compteurs des événements
+    // Panneau Debug : compteurs des événements, et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -497,7 +737,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 }
             },
             text = {
-                Column {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("Pseudo : /@$displayName", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -512,6 +752,17 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     Text("Relais : ${c("relay")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Sans pair : ${c("no_peer")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Échecs : ${c("fail")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+
+                    Spacer(Modifier.height(14.dp))
+                    Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text("Version : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text("Installée depuis : ${dist.installer}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text("Empreinte du certificat (SHA-256) :", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text(dist.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
+                    TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) {
+                        Text("Copier l'empreinte", fontSize = 13.sp)
+                    }
+
                     Spacer(Modifier.height(10.dp))
                     Text(
                         "Lecture : « Envois réussis » augmente quand un pair confirme la réception. « Échecs » indique le problème dans le journal.",
@@ -541,7 +792,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     modifier = Modifier.width(300.dp).fillMaxHeight(),
                     color = bgColor
                 ) {
-                    Column(Modifier.fillMaxSize().padding(20.dp)) {
+                    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
                             TextButton(onClick = { showSettings = false }) { Text("✕", fontSize = 18.sp, color = inkColor) }
@@ -596,13 +847,30 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                         )
 
                         Spacer(Modifier.height(16.dp))
+                        Text("Live push-to-talk", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            "Maintenir le micro pour parler en direct à un contact à portée. Un appui bref envoie toujours un vocal.",
+                            color = grey,
+                            fontSize = 12.sp
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Switch(
+                            checked = AppState.liveOn,
+                            onCheckedChange = { on ->
+                                AppState.liveOn = on
+                                prefs.edit().putBoolean("live_on", on).apply()
+                            },
+                            colors = SwitchDefaults.colors(checkedTrackColor = green)
+                        )
+
+                        Spacer(Modifier.height(16.dp))
                         Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         Text("Français", color = inkColor, fontSize = 14.sp)
                         Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 12.sp)
 
-                        // Outils de debug, tout en bas du panneau
-                        Spacer(Modifier.weight(1f))
+                        // Outils de debug, en bas du panneau
+                        Spacer(Modifier.height(16.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
@@ -812,7 +1080,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     if (canSend) {
                         CircleButton("➤", green, Color.White, size = 50.dp) { send() }
                     } else {
-                        MicButton(recording) { onMicTap() }
+                        MicButton(
+                            recording = recording || liveHolding,
+                            live = AppState.liveOn,
+                            onTap = { onMicTap() },
+                            onHoldStart = { startLive() },
+                            onHoldEnd = { stopLive() }
+                        )
                     }
                 }
             }
