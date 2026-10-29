@@ -51,15 +51,11 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
-import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 import kotlinx.coroutines.delay
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
@@ -121,7 +117,7 @@ class VoiceRecorder(private val context: Context) {
     }
 }
 
-/** Réglages partagés, observés par l'écran. */
+/** Réglages de l'écran (l'état du service vient de BleMeshManager). */
 object AppState {
     var serviceOn by mutableStateOf(false)
     var runInBackground by mutableStateOf(true)
@@ -141,6 +137,12 @@ class MainActivity : ComponentActivity() {
                 onStop = { stopMeshService() }
             )
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Si le service tourne déjà (écran rouvert), l'interrupteur doit le montrer
+        if (BleMeshManager.instance != null) AppState.serviceOn = true
     }
 
     override fun onStop() {
@@ -186,30 +188,8 @@ private const val PUBLIC = "public"
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
 
-/** Date et heure actuelles, par exemple « 27 oct. 12:11 ». */
-private fun nowText(): String = SimpleDateFormat("dd MMM HH:mm", Locale.FRANCE).format(Date())
-
-/**
- * Une bulle de conversation.
- * chat = PUBLIC pour la conversation générale, ou l'identifiant complet du téléphone pour une discussion privée.
- * audio = chemin du fichier vocal, si la bulle contient un vocal.
- * status = « ✓ Envoyé », « ✓✓ Reçu » ou « ✓✓ Lu » pour mes messages privés.
- * msgId = identifiant du message privé, pour retrouver ses accusés.
- */
-private data class Bubble(
-    val mine: Boolean,
-    val author: String,
-    val text: String,
-    val image: Bitmap? = null,
-    val chat: String,
-    val audio: String? = null,
-    val time: String = nowText(),
-    val status: String? = null,
-    val msgId: String? = null
-)
-
 /** Titre affiché au-dessus d'une bulle. */
-private fun bubbleTitle(b: Bubble): String = when {
+private fun bubbleTitle(b: ChatBubble): String = when {
     b.mine -> "Moi"
     b.author == "photo" -> "Photo"
     b.author == "vocal" -> "Vocal"
@@ -313,23 +293,29 @@ private fun ChatChip(label: String, selected: Boolean, green: Color, inkColor: C
 private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
-    var bubbles by remember { mutableStateOf(listOf<Bubble>()) }
-    var journal by remember { mutableStateOf(listOf("MeshChat prêt.")) }
-    var peers by remember { mutableStateOf(listOf<MeshPeer>()) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
-    var pseudo by remember { mutableStateOf("anon0000") }
-    var counts by remember { mutableStateOf(mapOf<String, Int>()) }
-    var recording by remember { mutableStateOf(false) }
     var wifiPeers by remember { mutableStateOf(0) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
+    var recording by remember { mutableStateOf(false) }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
     val wifiDiscovery = remember { WifiAwareDiscovery(context) }
+
+    // Données partagées avec le service : elles restent là quand l'écran se ferme
+    val peers = MeshState.peers
+    val pseudo = MeshState.pseudo
+    val journal = MeshState.journal
+    val bubbles = MeshState.bubbles
+    val counts = MeshState.counts
+
+    fun log(line: String) = MeshState.addJournal(line)
+
+    fun c(key: String): Int = counts[key] ?: 0
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -348,14 +334,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
 
-    // Compte un événement, pour le panneau Debug
-    fun count(key: String) {
-        counts = counts + (key to ((counts[key] ?: 0) + 1))
-    }
-
-    fun c(key: String): Int = counts[key] ?: 0
-
-    // Wi-Fi Aware : démarre la découverte quand le service est actif, l'arrête quand il s'arrête
+    // Wi-Fi Aware : démarre quand le service est actif, s'arrête quand il s'arrête
     LaunchedEffect(AppState.serviceOn) {
         if (AppState.serviceOn) {
             var tries = 0
@@ -366,7 +345,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             val manager = BleMeshManager.instance
             if (manager != null) {
                 val myHex = manager.myId.joinToString("") { "%02x".format(it) }
-                wifiDiscovery.start(myHex, { wifiPeers = it }, { line -> journal = journal + line })
+                wifiDiscovery.start(myHex, { wifiPeers = it }, { line -> log(line) })
             }
         } else {
             wifiDiscovery.stop()
@@ -377,6 +356,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
     LaunchedEffect(selectedChat) {
         if (selectedChat != PUBLIC) BleMeshManager.instance?.markRead(selectedChat)
+    }
+
+    // Si la discussion choisie n'est plus à portée, on revient à « Tous »
+    LaunchedEffect(peers) {
+        if (selectedChat != PUBLIC && peers.none { it.id == selectedChat }) selectedChat = PUBLIC
     }
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
@@ -394,94 +378,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (bitmap != null) pendingPhoto = bitmap
     }
 
-    DisposableEffect(Unit) {
-        BleMeshManager.listener = { line ->
-            when {
-                line.startsWith("Mon identifiant : ") -> {
-                    pseudo = pseudoFrom(line.removePrefix("Mon identifiant : ").trim())
-                    journal = journal + line
-                }
-                line.startsWith("Statut ") -> {
-                    // Accusé : « Statut <identifiant> reçu » ou « Statut <identifiant> lu »
-                    val rest = line.removePrefix("Statut ")
-                    val id = rest.substringBefore(" ")
-                    val newStatus = if (rest.endsWith("lu")) "✓✓ Lu" else "✓✓ Reçu"
-                    bubbles = bubbles.map { b ->
-                        if (b.msgId == id && b.status != "✓✓ Lu") b.copy(status = newStatus) else b
-                    }
-                }
-                line.startsWith("Reçu privé de ") -> {
-                    count("in_text")
-                    val rest = line.removePrefix("Reçu privé de ")
-                    val sender = rest.substringBefore(" : ")
-                    val text = rest.substringAfter(" : ", "")
-                    bubbles = bubbles + Bubble(false, sender, text, null, sender)
-                }
-                line.startsWith("Reçu de ") -> {
-                    count("in_text")
-                    val rest = line.removePrefix("Reçu de ")
-                    val sender = rest.substringBefore(" : ")
-                    val text = rest.substringAfter(" : ", "")
-                    bubbles = bubbles + Bubble(false, sender, text, null, PUBLIC)
-                }
-                line.startsWith("Pair trouvé") -> journal = journal + line
-                line.startsWith("Fichier reçu") -> {
-                    count("in_file")
-                    journal = journal + line
-                }
-                line.startsWith("Envoyé à") -> {
-                    count("out_ok")
-                    journal = journal + line
-                }
-                line.startsWith("Envoi du fichier") -> {
-                    count("out_file")
-                    journal = journal + line
-                }
-                line.startsWith("Relais vers") -> {
-                    count("relay")
-                    journal = journal + line
-                }
-                line.startsWith("Aucun pair") -> {
-                    count("no_peer")
-                    journal = journal + line
-                }
-                line.contains("chec") -> {
-                    count("fail")
-                    journal = journal + line
-                }
-                else -> journal = journal + line
-            }
-        }
-        // Liste des téléphones identifiés, mise à jour par le Bluetooth
-        BleMeshManager.peersListener = { list ->
-            peers = list
-            // Si la discussion choisie n'est plus à portée, on revient à « Tous »
-            if (selectedChat != PUBLIC && list.none { it.id == selectedChat }) selectedChat = PUBLIC
-        }
-        // Contenu complet reçu : le premier octet indique si c'est une photo ou un vocal
-        BleMeshManager.blobListener = { bytes, from ->
-            if (bytes.isNotEmpty() && bytes[0] == KIND_AUDIO) {
-                val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
-                file.writeBytes(bytes.copyOfRange(1, bytes.size))
-                val chat = from ?: PUBLIC
-                bubbles = bubbles + Bubble(false, from ?: "vocal", "Vocal reçu", null, chat, file.absolutePath)
-            } else if (bytes.isNotEmpty() && bytes[0] == KIND_PHOTO) {
-                BitmapFactory.decodeByteArray(bytes, 1, bytes.size - 1)?.let { photo ->
-                    if (from == null) {
-                        bubbles = bubbles + Bubble(false, "photo", "Photo reçue", photo, PUBLIC)
-                    } else {
-                        bubbles = bubbles + Bubble(false, from, "Photo reçue", photo, from)
-                    }
-                }
-            }
-        }
-        onDispose {
-            BleMeshManager.listener = null
-            BleMeshManager.peersListener = null
-            BleMeshManager.blobListener = null
-        }
-    }
-
     // Messages de la conversation choisie
     val visible = bubbles.filter { it.chat == selectedChat }
 
@@ -493,7 +389,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
-            journal = journal + "Service non activé : activez le service"
+            log("Service non activé : activez le service")
             return
         }
         val target = if (selectedChat == PUBLIC) null else selectedChat
@@ -501,10 +397,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
                 // Pour un message privé, on garde son identifiant pour recevoir ses accusés
-                bubbles = bubbles + Bubble(
-                    true, "moi", draft, null, selectedChat,
-                    status = "✓ Envoyé",
-                    msgId = manager.lastSentId
+                MeshState.addBubble(
+                    ChatBubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé", msgId = manager.lastSentId)
                 )
                 draft = ""
             }
@@ -512,7 +406,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         pendingPhoto?.let { photo ->
             val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
-                bubbles = bubbles + Bubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé")
+                MeshState.addBubble(ChatBubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé"))
                 pendingPhoto = null
             }
         }
@@ -521,14 +415,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     /** Démarre l'enregistrement du vocal. */
     fun startVoice() {
         if (BleMeshManager.instance == null) {
-            journal = journal + "Service non activé : activez le service"
+            log("Service non activé : activez le service")
             return
         }
         if (recorder.start()) {
             recording = true
-            journal = journal + "Enregistrement vocal…"
+            log("Enregistrement vocal…")
         } else {
-            journal = journal + "Micro indisponible"
+            log("Micro indisponible")
         }
     }
 
@@ -537,7 +431,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         recording = false
         val bytes: ByteArray? = recorder.stop()
         if (bytes == null || bytes.isEmpty()) {
-            journal = journal + "Vocal vide, rien n'a été envoyé"
+            log("Vocal vide, rien n'a été envoyé")
             return
         }
         val manager = BleMeshManager.instance ?: return
@@ -546,13 +440,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         if (sent > 0) {
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
-            bubbles = bubbles + Bubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath, status = "✓ Envoyé")
+            MeshState.addBubble(ChatBubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath, status = "✓ Envoyé"))
         }
     }
 
     // Permission du micro : demandée la première fois qu'on appuie sur le micro
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startVoice() else journal = journal + "Micro refusé dans les réglages du téléphone"
+        if (granted) startVoice() else log("Micro refusé dans les réglages du téléphone")
     }
 
     /** Un appui sur le micro : démarre, ou arrête et envoie. */
@@ -618,7 +512,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 TextButton(onClick = { showDebug = false }) { Text("Fermer") }
             },
             dismissButton = {
-                TextButton(onClick = { counts = emptyMap() }) { Text("Remettre à zéro") }
+                TextButton(onClick = { MeshState.counts.clear() }) { Text("Remettre à zéro") }
             }
         )
     }
@@ -736,10 +630,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     checked = AppState.serviceOn,
                     onCheckedChange = { on ->
                         if (on) {
-                            journal = journal + "Activation du service demandée"
+                            log("Activation du service demandée")
                             onStart()
                         } else {
-                            journal = journal + "Service arrêté"
+                            log("Service arrêté")
                             onStop()
                         }
                     },
