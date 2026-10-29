@@ -39,7 +39,7 @@ private fun rank(status: String?): Int = when (status) {
 }
 
 /**
- * Mémoire de l'application : journal, conversations, pairs.
+ * Mémoire de l'application : journal, conversations, pairs, contacts.
  * Elle vit tant que le service tourne, donc les messages reçus écran fermé sont gardés.
  */
 object MeshState {
@@ -53,7 +53,12 @@ object MeshState {
     val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
     val counts = mutableStateMapOf<String, Int>()
+
+    /** Pairs à portée, en ce moment. */
     var peers by mutableStateOf(listOf<MeshPeer>())
+    /** Tous les contacts déjà rencontrés, y compris ceux qui sont hors de portée. */
+    var contacts by mutableStateOf(listOf<MeshPeer>())
+    /** Pseudo de ce téléphone : le nom choisi, ou anonXXXX tant qu'il n'est pas choisi. */
     var pseudo by mutableStateOf("anon0000")
     /** Nombre de pairs trouvés par Wi-Fi Aware (rempli par le service). */
     var wifiPeers by mutableStateOf(0)
@@ -67,8 +72,26 @@ object MeshState {
     fun attach(context: Context) {
         appContext = context.applicationContext
         BleMeshManager.listener = { line -> onLine(line) }
-        BleMeshManager.peersListener = { list -> peers = list }
+        BleMeshManager.peersListener = { list ->
+            peers = list
+            refresh()
+        }
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
+    }
+
+    /** Recalcule le pseudo et la liste des contacts à partir du gestionnaire Bluetooth. */
+    fun refresh() {
+        val m = BleMeshManager.instance ?: return
+        val name = m.myName
+        pseudo = if (name.isNotBlank()) name else pseudoFrom(m.myId.joinToString("") { "%02x".format(it) }.take(8))
+        contacts = m.knownContacts()
+    }
+
+    /** Nom à afficher pour un identifiant : le nom reçu, sinon anonXXXX. */
+    fun nameOf(id: String): String {
+        val known = contacts.firstOrNull { it.id == id }?.name?.takeIf { it.isNotBlank() }
+            ?: peers.firstOrNull { it.id == id }?.name?.takeIf { it.isNotBlank() }
+        return known ?: pseudoFrom(id.take(8))
     }
 
     fun addJournal(line: String) {
@@ -102,8 +125,13 @@ object MeshState {
     private fun onLine(line: String) {
         when {
             line.startsWith("Mon identifiant : ") -> {
-                pseudo = pseudoFrom(line.removePrefix("Mon identifiant : ").trim())
                 addJournal(line)
+                refresh()
+            }
+            line.startsWith("Clés mémorisées : ") -> {
+                // Au démarrage, la liste des contacts déjà rencontrés est chargée ici
+                addJournal(line)
+                refresh()
             }
             line.startsWith("Statut ") -> {
                 // « Statut <identifiant> reçu » ou « Statut <identifiant> lu »
@@ -171,7 +199,7 @@ object MeshState {
 
 private fun timeNow(): String = SimpleDateFormat("dd MMM HH:mm", Locale.FRANCE).format(Date())
 
-/** Pseudo lisible à partir de l'identifiant Bluetooth, par exemple anon1053. */
+/** Pseudo de repli à partir de l'identifiant Bluetooth, par exemple anon1053. */
 private fun pseudoFrom(shortId: String): String {
     val number = (shortId.toLongOrNull(16) ?: 0L) % 10000L
     return "anon" + number.toString().padStart(4, '0')
