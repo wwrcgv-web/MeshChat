@@ -44,6 +44,8 @@ object MeshState {
     val counts = mutableStateMapOf<String, Int>()
     var peers by mutableStateOf(listOf<MeshPeer>())
     var pseudo by mutableStateOf("anon0000")
+    /** Nombre de pairs trouvés par Wi-Fi Aware (rempli par le service). */
+    var wifiPeers by mutableStateOf(0)
 
     private var appContext: Context? = null
 
