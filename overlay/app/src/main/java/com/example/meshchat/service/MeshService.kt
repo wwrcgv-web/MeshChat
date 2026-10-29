@@ -11,10 +11,12 @@ import android.os.Build
 import android.os.IBinder
 import com.example.meshchat.MeshState
 import com.example.meshchat.ble.BleMeshManager
+import com.example.meshchat.wifi.WifiAwareDiscovery
 
-/** Service de premier plan : garde MeshChat actif (annonce, scan, réserve) même écran éteint. */
+/** Service de premier plan : garde MeshChat actif (Bluetooth, Wi-Fi Aware, réserve) même écran éteint. */
 class MeshService : Service() {
     private var manager: BleMeshManager? = null
+    private var wifi: WifiAwareDiscovery? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -35,11 +37,21 @@ class MeshService : Service() {
             startForeground(NOTIF_ID, notification)
         }
 
-        // Un seul gestionnaire : il n'est pas recréé si l'écran relance le service, ce qui garde la réserve de messages
+        // Un seul gestionnaire et une seule découverte Wi-Fi : elles ne sont pas recréées si l'écran relance le service
         if (manager == null) {
-            manager = BleMeshManager(this).also { it.startGattServer(); it.startAdvertising() }
+            val m = BleMeshManager(this).also { it.startGattServer(); it.startAdvertising() }
+            manager = m
+            startWifiAware(m)
         }
         return START_STICKY
+    }
+
+    /** Wi-Fi Aware tourne ici, dans le service : il continue écran fermé, comme le Bluetooth. */
+    private fun startWifiAware(m: BleMeshManager) {
+        val discovery = WifiAwareDiscovery(applicationContext)
+        wifi = discovery
+        val myHex = m.myId.joinToString("") { "%02x".format(it) }
+        discovery.start(myHex, { MeshState.wifiPeers = it }, { MeshState.addJournal(it) })
     }
 
     private fun buildNotification(): Notification {
@@ -60,6 +72,8 @@ class MeshService : Service() {
     }
 
     override fun onDestroy() {
+        wifi?.stop()
+        wifi = null
         manager?.stop()
         manager = null
         super.onDestroy()
