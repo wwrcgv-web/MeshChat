@@ -25,8 +25,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.SecretKey
 
-/** Un téléphone trouvé, identifié par son identifiant MeshChat (16 caractères hexadécimaux). */
-data class MeshPeer(val id: String)
+/**
+ * Un téléphone trouvé : son identifiant MeshChat (16 caractères hexadécimaux)
+ * et son nom d'utilisateur (vide si on ne le connaît pas encore).
+ */
+data class MeshPeer(val id: String, val name: String = "")
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
@@ -59,12 +62,13 @@ class BleMeshManager(private val context: Context) {
     /** Connexions en attente ou en cours. Le scan reprend quand ce compteur revient à zéro. */
     private val pendingJobs = AtomicInteger(0)
 
-    /** Préférences du téléphone : identifiant, clés, et clés des pairs rencontrés. */
+    /** Préférences du téléphone : identifiant, nom, clés, et contacts rencontrés. */
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
 
     private val peers = ConcurrentHashMap<String, BluetoothDevice>()   // adresse Bluetooth -> appareil
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
     private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique (gardée entre les lancements)
+    private val peerNames = ConcurrentHashMap<String, String>()        // identifiant MeshChat -> nom d'utilisateur (gardé entre les lancements)
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val seenSecret: MutableSet<String> = ConcurrentHashMap.newKeySet()    // messages privés et accusés déjà vus
     private val seenFragments: MutableSet<String> = ConcurrentHashMap.newKeySet() // fragments déjà vus
@@ -86,6 +90,18 @@ class BleMeshManager(private val context: Context) {
     init {
         instance = this
         loadPeerKeys()
+    }
+
+    /**
+     * Nom d'utilisateur de ce téléphone, choisi au premier lancement. Vide tant qu'il n'est pas choisi.
+     * Il est envoyé aux téléphones rencontrés, à la prochaine rencontre.
+     */
+    val myName: String
+        get() = prefs.getString("my_name", "") ?: ""
+
+    /** Enregistre le nom d'utilisateur de ce téléphone. */
+    fun setMyName(name: String) {
+        prefs.edit().putString("my_name", name.trim().take(MAX_NAME_CHARS)).apply()
     }
 
     /** Lit l'identifiant enregistré sur le téléphone, ou en crée un la première fois. */
@@ -121,16 +137,19 @@ class BleMeshManager(private val context: Context) {
         return fresh
     }
 
-    /** Recharge les clés des téléphones déjà rencontrés. */
+    /** Recharge les clés et les noms des téléphones déjà rencontrés. */
     private fun loadPeerKeys() {
         try {
             val factory = KeyFactory.getInstance("EC")
-            prefs.all.forEach { (name, value) ->
-                if (name.startsWith("peer_") && value is String) {
+            prefs.all.forEach { (key, value) ->
+                if (value !is String) return@forEach
+                if (key.startsWith("name_")) {
+                    peerNames[key.removePrefix("name_")] = value
+                } else if (key.startsWith("peer_")) {
                     try {
-                        peerKeys[name.removePrefix("peer_")] = factory.generatePublic(X509EncodedKeySpec(value.hexToBytes()))
+                        peerKeys[key.removePrefix("peer_")] = factory.generatePublic(X509EncodedKeySpec(value.hexToBytes()))
                     } catch (e: Exception) {
-                        Log.w(TAG, "Clé de pair illisible ignorée : $name")
+                        Log.w(TAG, "Clé de pair illisible ignorée : $key")
                     }
                 }
             }
@@ -145,11 +164,18 @@ class BleMeshManager(private val context: Context) {
         main.post { listener?.invoke(msg) }
     }
 
-    /** Publie à l'écran la liste des téléphones identifiés. */
+    /** Publie à l'écran la liste des téléphones identifiés, avec leur nom quand on le connaît. */
     private fun publishPeers() {
-        val list = peerIds.values.distinct().sorted().map { MeshPeer(it) }
+        val list = peerIds.values.distinct().sorted().map { MeshPeer(it, peerNames[it] ?: "") }
         main.post { peersListener?.invoke(list) }
     }
+
+    /**
+     * Tous les téléphones déjà rencontrés, même hors de portée : identifiant et nom.
+     * Ils sont gardés dans les préférences, donc la liste survit au redémarrage.
+     */
+    fun knownContacts(): List<MeshPeer> =
+        peerKeys.keys.sorted().map { MeshPeer(it, peerNames[it] ?: "") }
 
     /** Secret commun avec ce téléphone, ou null si sa clé n'a pas encore été reçue. */
     fun sharedKeyWith(peerId: String): SecretKey? {
@@ -349,8 +375,14 @@ class BleMeshManager(private val context: Context) {
 
     private fun textFrame(packet: MeshPacket): ByteArray = byteArrayOf(TYPE_TEXT) + packet.encode()
 
-    /** Trame d'échange de clé : type (1) + mon identifiant (8) + ma clé publique. */
-    private fun keyFrame(): ByteArray = byteArrayOf(TYPE_KEY) + myId + CryptoEngine.encodePublic(keyPair.public)
+    /**
+     * Trame d'échange de clé : type (1) + mon identifiant (8) + longueur du nom (1) + nom (UTF-8) + ma clé publique.
+     */
+    private fun keyFrame(): ByteArray {
+        val nameBytes = myName.take(MAX_NAME_CHARS).toByteArray(Charsets.UTF_8)
+        return byteArrayOf(TYPE_KEY) + myId + byteArrayOf(nameBytes.size.toByte()) + nameBytes +
+            CryptoEngine.encodePublic(keyPair.public)
+    }
 
     /** Envoie une trame à un pair, via la file d'attente. */
     private fun sendTo(device: BluetoothDevice, frame: ByteArray) = enqueue(device, listOf(frame))
@@ -505,7 +537,7 @@ class BleMeshManager(private val context: Context) {
                         peers.remove(it)
                         peerIds.remove(it)
                     }
-                    emit("Pair trouvé : ${id.take(8)}")
+                    emit("Pair trouvé : ${(peerNames[id] ?: id).take(8)}")
                     publishPeers()
                     // Premier contact : une seule connexion pour la clé, les messages gardés et les messages publics en attente
                     val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
@@ -549,17 +581,30 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /** Reçoit la clé publique d'un téléphone, la garde en mémoire et dans les préférences. */
+    /**
+     * Reçoit l'identité d'un téléphone : son identifiant, son nom et sa clé publique.
+     * Tout est gardé en mémoire et dans les préférences, pour que le contact reste après un redémarrage.
+     */
     private fun handleKey(body: ByteArray) {
-        if (body.size <= MeshPacket.ID_SIZE) { emit("Clé mal formée"); return }
-        val senderId = body.copyOfRange(0, MeshPacket.ID_SIZE).toHex()
-        val publicBytes = body.copyOfRange(MeshPacket.ID_SIZE, body.size)
+        val idSize = MeshPacket.ID_SIZE
+        if (body.size <= idSize + 1) { emit("Clé mal formée"); return }
+        val senderId = body.copyOfRange(0, idSize).toHex()
+        val nameLen = body[idSize].toInt() and 0xFF
+        val nameStart = idSize + 1
+        if (body.size <= nameStart + nameLen) { emit("Clé mal formée"); return }
+        val name = String(body, nameStart, nameLen, Charsets.UTF_8).trim()
+        val publicBytes = body.copyOfRange(nameStart + nameLen, body.size)
         try {
             val key = CryptoEngine.decodePublic(publicBytes)
             peerKeys[senderId] = key
-            // Sauvegarde : la clé reste disponible après un redémarrage de l'application
-            prefs.edit().putString("peer_$senderId", publicBytes.toHex()).apply()
-            emit("Clé reçue de ${senderId.take(8)}")
+            peerNames[senderId] = name
+            // Sauvegarde : le contact reste disponible après un redémarrage de l'application
+            prefs.edit()
+                .putString("peer_$senderId", publicBytes.toHex())
+                .putString("name_$senderId", name)
+                .apply()
+            publishPeers()
+            emit("Clé reçue de ${name.ifBlank { senderId.take(8) }}")
         } catch (e: Exception) {
             emit("Clé invalide reçue de ${senderId.take(8)}")
         }
@@ -728,7 +773,7 @@ class BleMeshManager(private val context: Context) {
         try { if (advertising) adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback) } catch (e: SecurityException) { Log.w(TAG, "Arrêt annonce impossible", e) }
         try { server?.close() } catch (e: SecurityException) { Log.w(TAG, "Fermeture serveur impossible", e) }
         scanning = false; advertising = false; server = null
-        // Les clés des pairs ne sont PAS effacées : elles restent sauvegardées
+        // Les clés et les noms des contacts ne sont PAS effacés : ils restent sauvegardés
         peers.clear()
         peerIds.clear()
         assemblies.clear()
@@ -743,6 +788,8 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_TEXT_BYTES = 200
         private const val MAX_PRIVATE_BYTES = 180
         private const val MAX_SEEN_FRAGMENTS = 5000
+        /** Longueur maximale d'un nom d'utilisateur, en caractères. */
+        private const val MAX_NAME_CHARS = 20
         /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
         private const val MAX_BLE_BLOB = 250_000
         /** Nombre d'essais par connexion, et pause de base entre deux essais. */
