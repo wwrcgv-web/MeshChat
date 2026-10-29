@@ -18,10 +18,12 @@ import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
+import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.SecretKey
 
@@ -33,6 +35,13 @@ data class MeshPeer(val id: String, val name: String = "")
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByte() }.toByteArray()
+private fun Int.toBytes4(): ByteArray =
+    byteArrayOf((this shr 24).toByte(), (this shr 16).toByte(), (this shr 8).toByte(), this.toByte())
+private fun ByteArray.toInt4(offset: Int): Int =
+    ((this[offset].toInt() and 0xFF) shl 24) or
+        ((this[offset + 1].toInt() and 0xFF) shl 16) or
+        ((this[offset + 2].toInt() and 0xFF) shl 8) or
+        (this[offset + 3].toInt() and 0xFF)
 
 @SuppressLint("MissingPermission")
 class BleMeshManager(private val context: Context) {
@@ -49,6 +58,26 @@ class BleMeshManager(private val context: Context) {
     /** Résultat d'une tentative de connexion : réussie ou non, avec la raison. */
     private class Attempt(val ok: Boolean, val reason: String)
 
+    /**
+     * Une tâche de la file Bluetooth. Les tâches de priorité plus basse passent devant.
+     * Le live (priorité 0) passe avant les fichiers et les messages (priorité 1).
+     */
+    private class Task(
+        val priority: Int,
+        val seq: Long,
+        val live: Boolean,
+        val body: () -> Unit
+    ) : Runnable, Comparable<Task> {
+        override fun run() = body()
+        override fun compareTo(other: Task): Int =
+            if (priority != other.priority) priority.compareTo(other.priority) else seq.compareTo(other.seq)
+    }
+
+    /** Un morceau de voix en cours de réception, rassemblé à partir de ses parties. */
+    private class LiveAssembly(total: Int, val createdAt: Long) {
+        val parts = arrayOfNulls<ByteArray>(total)
+    }
+
     private val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private val serviceUuid = UUID.fromString("0000ffff-0000-1000-8000-00805f9b34fb")
     private val characteristicUuid = UUID.fromString("0000feee-0000-1000-8000-00805f9b34fb")
@@ -57,10 +86,19 @@ class BleMeshManager(private val context: Context) {
     @Volatile private var scanning = false
     @Volatile private var stopped = false
 
-    /** Une seule connexion Bluetooth à la fois : les envois font la queue ici. */
-    private val bleExecutor = Executors.newSingleThreadExecutor()
-    /** Connexions en attente ou en cours. Le scan reprend quand ce compteur revient à zéro. */
+    /** Une seule connexion Bluetooth à la fois : les envois font la queue ici, le live passe en premier. */
+    private val bleExecutor = ThreadPoolExecutor(
+        1, 1, 0L, TimeUnit.MILLISECONDS,
+        PriorityBlockingQueue<Runnable>(16, Comparator<Runnable> { a, b -> (a as Task).compareTo(b as Task) })
+    )
+    private val taskSeq = AtomicLong(0)
+    /** Connexions de fichiers ou de messages en attente ou en cours. Le scan reprend quand ce compteur revient à zéro. */
     private val pendingJobs = AtomicInteger(0)
+
+    /** Morceaux de voix en cours de réception, par numéro de morceau. */
+    private val liveAssemblies = ConcurrentHashMap<Int, LiveAssembly>()
+    /** Dernier numéro de morceau reçu de chaque contact, pour ignorer les morceaux anciens. */
+    private val lastLiveSeq = ConcurrentHashMap<String, Int>()
 
     /** Préférences du téléphone : identifiant, nom, clés, et contacts rencontrés. */
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
@@ -313,6 +351,59 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
+     * Envoie un morceau de voix en direct, à un seul contact, chiffré de bout en bout.
+     * Il part par Wi-Fi si un lien est prêt avec ce contact, sinon par Bluetooth.
+     * L'envoi se fait en arrière-plan : l'appelant n'attend pas. Un morceau encore en attente est remplacé.
+     */
+    fun sendLive(chunk: ByteArray, toPeerId: String) {
+        if (stopped) return
+        val key = sharedKeyWith(toPeerId) ?: run {
+            emit("Live : clé de ce pair pas encore reçue")
+            return
+        }
+        val cipher = CryptoEngine.encrypt(chunk, key)
+        // Numéro du morceau : l'heure en millisecondes, croissante même après un redémarrage
+        val seq = (System.currentTimeMillis() and 0x7FFFFFFFL).toInt()
+        val tag = MeshStore.tagFor(toPeerId)
+        dropStaleLive()
+        try {
+            bleExecutor.execute(Task(PRIO_LIVE, taskSeq.incrementAndGet(), live = true) {
+                try {
+                    runLive(toPeerId, tag, seq, cipher)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Live interrompu", e)
+                }
+            })
+        } catch (e: RejectedExecutionException) {
+            // File fermée : le téléphone s'arrête, le morceau est abandonné
+        }
+    }
+
+    /**
+     * Envoi d'un morceau de voix, exécuté dans la file Bluetooth.
+     * Wi-Fi d'abord : un seul morceau, sans découpage. Sinon Bluetooth, en parties de 200 octets.
+     */
+    private fun runLive(toPeerId: String, tag: ByteArray, seq: Int, cipher: ByteArray) {
+        val viaWifi = wifiSender?.invoke(FLAG_LIVE, tag + seq.toBytes4() + cipher, toPeerId) ?: 0
+        if (viaWifi > 0) return
+
+        val device = peers.entries.firstOrNull { peerIds[it.key] == toPeerId }?.value ?: return
+        val total = (cipher.size + LIVE_PART_BYTES - 1) / LIVE_PART_BYTES
+        if (total > 255) {
+            emit("Live : morceau trop long")
+            return
+        }
+        // Trame : type (1) + étiquette (8) + numéro du morceau (4) + rang de la partie (1) + nombre de parties (1) + partie
+        val frames = (0 until total).map { i ->
+            val from = i * LIVE_PART_BYTES
+            val to = minOf(cipher.size, from + LIVE_PART_BYTES)
+            byteArrayOf(TYPE_LIVE) + tag + seq.toBytes4() + byteArrayOf(i.toByte(), total.toByte()) + cipher.copyOfRange(from, to)
+        }
+        val result = connectAndWrite(device, frames, LIVE_TIMEOUT_MS)
+        if (!result.ok) emit("Live : morceau non envoyé par Bluetooth (${result.reason})")
+    }
+
+    /**
      * Envoie une photo, un vocal, un fichier ou une vidéo.
      * D'abord par Wi-Fi Aware (voisins directs, sans limite de taille).
      * Sinon par Bluetooth, en fragments, pour les petits contenus seulement (250 Ko maximum).
@@ -356,14 +447,19 @@ class BleMeshManager(private val context: Context) {
         list.forEach { sendAck(peerId, it.hexToBytes(), KIND_READ) }
     }
 
-    /** Contenu reçu par Wi-Fi Aware : même traitement que par Bluetooth. Appelé par le service. */
+    /**
+     * Contenu reçu par Wi-Fi Aware. Appelé par le service.
+     * Le drapeau 2 est un morceau de voix en direct ; 1 est public ; 0 est un fichier privé.
+     */
     fun onWifiBlob(flag: Int, payload: ByteArray) {
-        if (flag == FLAG_PUBLIC) {
-            deliverBlob(payload, null)
-            return
+        when (flag) {
+            FLAG_LIVE -> handleWifiLive(payload)
+            FLAG_PUBLIC -> deliverBlob(payload, null)
+            else -> {
+                val opened = openForMe(payload) ?: return
+                deliverBlob(opened.second, opened.first)
+            }
         }
-        val opened = openForMe(payload) ?: return
-        deliverBlob(opened.second, opened.first)
     }
 
     /** Remet un contenu complet à l'écran. [from] vaut null pour la conversation générale. */
@@ -396,9 +492,20 @@ class BleMeshManager(private val context: Context) {
         pendingJobs.incrementAndGet()
         pauseScan()
         try {
-            bleExecutor.execute { runJob(BleJob(device, frames, group)) }
+            bleExecutor.execute(Task(PRIO_NORMAL, taskSeq.incrementAndGet(), live = false) {
+                runJob(BleJob(device, frames, group))
+            })
         } catch (e: RejectedExecutionException) {
             finishJob()
+        }
+    }
+
+    /** Retire de la file les morceaux de voix encore en attente : le nouveau les remplace. */
+    private fun dropStaleLive() {
+        val iterator = bleExecutor.queue.iterator()
+        while (iterator.hasNext()) {
+            val task = iterator.next()
+            if (task is Task && task.live) iterator.remove()
         }
     }
 
@@ -428,10 +535,13 @@ class BleMeshManager(private val context: Context) {
         if (pendingJobs.decrementAndGet() == 0) startScanQuietly()
     }
 
+    /** Délai maximal d'une connexion pour un fichier ou un message : une base, plus un peu par trame. */
+    private fun fileTimeoutMs(frameCount: Int): Long = TIMEOUT_BASE_MS + frameCount * TIMEOUT_PER_FRAME_MS
+
     /** Essaie jusqu'à trois fois, avec une pause qui s'allonge entre les essais. */
     private fun sendWithRetry(device: BluetoothDevice, frames: List<ByteArray>): Boolean {
         for (attempt in 1..MAX_ATTEMPTS) {
-            val result = connectAndWrite(device, frames)
+            val result = connectAndWrite(device, frames, fileTimeoutMs(frames.size))
             if (result.ok) {
                 emit("Envoyé à ${device.address}")
                 return true
@@ -443,7 +553,7 @@ class BleMeshManager(private val context: Context) {
     }
 
     /** Une connexion complète : ouvre le lien, écrit toutes les trames, puis ferme. Retourne le résultat. */
-    private fun connectAndWrite(device: BluetoothDevice, frames: List<ByteArray>): Attempt {
+    private fun connectAndWrite(device: BluetoothDevice, frames: List<ByteArray>, timeoutMs: Long): Attempt {
         val finished = CountDownLatch(1)
         val outcome = AtomicReference<Attempt?>(null)
         fun finish(result: Attempt) {
@@ -511,7 +621,6 @@ class BleMeshManager(private val context: Context) {
             return Attempt(false, "permission refusée")
         }
 
-        val timeoutMs = TIMEOUT_BASE_MS + frames.size * TIMEOUT_PER_FRAME_MS
         if (!finished.await(timeoutMs, TimeUnit.MILLISECONDS)) {
             finish(Attempt(false, "délai dépassé"))
             handle?.disconnect()
@@ -577,8 +686,63 @@ class BleMeshManager(private val context: Context) {
             TYPE_KEY -> handleKey(value.copyOfRange(1, value.size))
             TYPE_SECRET -> handleSecret(fromAddress, value.copyOfRange(1, value.size))
             TYPE_ACK -> handleAck(fromAddress, value.copyOfRange(1, value.size))
+            TYPE_LIVE -> handleLive(value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
+    }
+
+    /**
+     * Reçoit une partie d'un morceau de voix par Bluetooth. Quand toutes les parties sont là, le morceau
+     * est rassemblé et traité. Le morceau n'est pas relayé : il ne sert qu'au contact directement à portée.
+     */
+    private fun handleLive(body: ByteArray) {
+        val tagSize = MeshStore.TAG_SIZE
+        val header = tagSize + 4 + 2
+        if (body.size <= header) return
+        val tag = body.copyOfRange(0, tagSize)
+        if (!tag.contentEquals(MeshStore.tagFor(myId.toHex()))) return
+        val seq = body.toInt4(tagSize)
+        val index = body[tagSize + 4].toInt() and 0xFF
+        val total = body[tagSize + 5].toInt() and 0xFF
+        if (total == 0 || index >= total) return
+        val part = body.copyOfRange(header, body.size)
+
+        val now = System.currentTimeMillis()
+        liveAssemblies.entries.removeIf { now - it.value.createdAt > LIVE_ASSEMBLY_MS }
+        val assembly = liveAssemblies.getOrPut(seq) { LiveAssembly(total, now) }
+        if (assembly.parts.size != total) return
+        assembly.parts[index] = part
+        if (assembly.parts.any { it == null }) return
+        liveAssemblies.remove(seq)
+
+        val cipher = assembly.parts.fold(ByteArray(0)) { acc, p -> acc + p!! }
+        deliverLive(seq, cipher)
+    }
+
+    /**
+     * Morceau de voix reçu par Wi-Fi. Le corps contient : étiquette (8) + numéro du morceau (4) + données chiffrées.
+     * Un seul morceau suffit, pas de rassemblement.
+     */
+    private fun handleWifiLive(body: ByteArray) {
+        val tagSize = MeshStore.TAG_SIZE
+        val header = tagSize + 4
+        if (body.size <= header) return
+        val tag = body.copyOfRange(0, tagSize)
+        if (!tag.contentEquals(MeshStore.tagFor(myId.toHex()))) return
+        val seq = body.toInt4(tagSize)
+        deliverLive(seq, body.copyOfRange(header, body.size))
+    }
+
+    /**
+     * Déchiffre un morceau de voix complet et le remet au lecteur.
+     * Un morceau plus ancien que le dernier reçu du même contact est ignoré.
+     */
+    private fun deliverLive(seq: Int, cipher: ByteArray) {
+        val (sender, audio) = openForMe(cipher) ?: return
+        if (seq <= (lastLiveSeq[sender] ?: Int.MIN_VALUE)) return
+        lastLiveSeq[sender] = seq
+        val receive = liveListener ?: return
+        main.post { receive(sender, audio) }
     }
 
     /**
@@ -779,6 +943,7 @@ class BleMeshManager(private val context: Context) {
         assemblies.clear()
         seenFragments.clear()
         pendingRead.clear()
+        liveAssemblies.clear()
         publishPeers()
         instance = null
     }
@@ -795,18 +960,28 @@ class BleMeshManager(private val context: Context) {
         /** Nombre d'essais par connexion, et pause de base entre deux essais. */
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_PAUSE_MS = 1_500L
-        /** Délai maximal d'une connexion : une base, plus un peu par trame à envoyer. */
+        /** Délai maximal d'une connexion pour un fichier : une base, plus un peu par trame à envoyer. */
         private const val TIMEOUT_BASE_MS = 20_000L
         private const val TIMEOUT_PER_FRAME_MS = 500L
+        /** Live : taille d'une partie de morceau (une trame Bluetooth), délai d'une connexion, durée de rassemblement. */
+        private const val LIVE_PART_BYTES = 200
+        private const val LIVE_TIMEOUT_MS = 6_000L
+        private const val LIVE_ASSEMBLY_MS = 5_000L
+        /** Priorités de la file : plus petit = passe avant. */
+        private const val PRIO_LIVE = 0
+        private const val PRIO_NORMAL = 1
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
         private const val TYPE_SECRET: Byte = 4
         private const val TYPE_ACK: Byte = 5
+        private const val TYPE_LIVE: Byte = 6
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
         private const val FLAG_PRIVATE = 1
+        /** Drapeau du morceau de voix en direct par Wi-Fi. Doit rester identique à LIVE_FLAG dans WifiAwareTransfer. */
+        private const val FLAG_LIVE = 2
         /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
         const val COMPANY_ID = 0xFFFE
         @Volatile var instance: BleMeshManager? = null
@@ -817,6 +992,8 @@ class BleMeshManager(private val context: Context) {
          * ou l'identifiant de l'expéditeur pour une discussion privée.
          */
         @Volatile var blobListener: ((ByteArray, String?) -> Unit)? = null
+        /** Reçoit un morceau de voix en direct : identifiant de l'expéditeur, et contenu audio. */
+        @Volatile var liveListener: ((String, ByteArray) -> Unit)? = null
         /** L'écran branche ici une fonction pour recevoir la liste des téléphones identifiés. */
         @Volatile var peersListener: ((List<MeshPeer>) -> Unit)? = null
         /**
