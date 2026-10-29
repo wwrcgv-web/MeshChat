@@ -3,6 +3,7 @@ package com.example.meshchat
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaPlayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -39,6 +40,53 @@ private fun rank(status: String?): Int = when (status) {
 }
 
 /**
+ * Lecteur du live : joue les morceaux un à la fois, dans l'ordre.
+ * Si un morceau arrive pendant qu'un autre joue, il attend. Si un autre arrive avant la fin, le plus ancien
+ * en attente est abandonné : on joue toujours le plus récent, jamais un son en retard.
+ */
+private class LivePlayer {
+    private var player: MediaPlayer? = null
+    private var pending: File? = null
+
+    /** Propose un morceau au lecteur : il joue tout de suite, ou prend la place du morceau en attente. */
+    fun offer(file: File) {
+        if (player == null) {
+            startNow(file)
+        } else {
+            pending?.delete()
+            pending = file
+        }
+    }
+
+    private fun startNow(file: File) {
+        val p = MediaPlayer()
+        player = p
+        var ended = false
+        // Fin du morceau, normale ou en erreur : on libère le lecteur une seule fois, puis on enchaîne
+        val end = {
+            if (!ended) {
+                ended = true
+                try { p.release() } catch (e: Exception) { }
+                file.delete()
+                if (player === p) player = null
+                val next = pending
+                pending = null
+                if (next != null) startNow(next)
+            }
+        }
+        try {
+            p.setDataSource(file.absolutePath)
+            p.setOnCompletionListener { end() }
+            p.setOnErrorListener { _, _, _ -> end(); true }
+            p.prepare()
+            p.start()
+        } catch (e: Exception) {
+            end()
+        }
+    }
+}
+
+/**
  * Mémoire de l'application : journal, conversations, pairs, contacts.
  * Elle vit tant que le service tourne, donc les messages reçus écran fermé sont gardés.
  */
@@ -49,6 +97,8 @@ object MeshState {
     private const val MAX_JOURNAL = 200
     private const val MAX_BUBBLES = 500
     private const val MAX_STATUSES = 1000
+    /** Délai sans morceau de voix au-delà duquel une nouvelle prise de parole est annoncée dans le journal. */
+    private const val LIVE_GAP_MS = 3_000L
 
     val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
@@ -66,6 +116,9 @@ object MeshState {
     /** Dernier statut connu de chaque message privé, pour les bulles créées après l'arrivée du statut. */
     private val statusById = HashMap<String, String>()
 
+    private val livePlayer = LivePlayer()
+    private var liveActiveUntil = 0L
+
     private var appContext: Context? = null
 
     /** Branché une seule fois, par le service. Les messages arrivent ensuite, écran fermé ou non. */
@@ -77,6 +130,7 @@ object MeshState {
             refresh()
         }
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
+        BleMeshManager.liveListener = { sender, audio -> onLive(sender, audio) }
     }
 
     /** Recalcule le pseudo et la liste des contacts à partir du gestionnaire Bluetooth. */
@@ -176,6 +230,20 @@ object MeshState {
             line.contains("chec") -> { count("fail"); addJournal(line) }
             else -> addJournal(line)
         }
+    }
+
+    /**
+     * Morceau de voix en direct reçu. Il est enregistré dans un fichier temporaire, puis joué.
+     * Le journal ne reçoit qu'une ligne au début de chaque prise de parole, pas une par morceau.
+     */
+    private fun onLive(sender: String, audio: ByteArray) {
+        val context = appContext ?: return
+        val now = System.currentTimeMillis()
+        if (now > liveActiveUntil) addJournal("Live reçu de ${nameOf(sender)}")
+        liveActiveUntil = now + LIVE_GAP_MS
+        val file = File(context.cacheDir, "live_${now}.m4a")
+        file.writeBytes(audio)
+        livePlayer.offer(file)
     }
 
     /** Photo ou vocal complet reçu. Le premier octet indique le type. */
