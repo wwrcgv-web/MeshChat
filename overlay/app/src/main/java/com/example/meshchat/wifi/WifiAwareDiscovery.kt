@@ -14,20 +14,26 @@ import android.net.wifi.aware.WifiAwareManager
 import android.net.wifi.aware.WifiAwareSession
 import android.os.Handler
 import android.os.Looper
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Découverte Wi-Fi Aware : chaque téléphone publie le service « meshchat » avec son identifiant,
- * et écoute les autres. Ne transfère rien pour l'instant : on vérifie seulement qui est trouvé.
+ * et écoute les autres. Garde aussi le moyen de les joindre pour ouvrir un lien de données.
  */
 @SuppressLint("MissingPermission")
 class WifiAwareDiscovery(private val context: Context) {
     private val main = Handler(Looper.getMainLooper())
     private var wifiSession: WifiAwareSession? = null
+    private var subscribeSession: SubscribeDiscoverySession? = null
     private val sessions = mutableListOf<DiscoverySession>()
     private val peers = HashSet<String>()
+    private val handles = ConcurrentHashMap<String, PeerHandle>()   // identifiant MeshChat -> poignée Wi-Fi Aware
     private var myId: String = ""
     private var onCount: ((Int) -> Unit)? = null
     private var onLog: ((String) -> Unit)? = null
+
+    /** Appelé à chaque fois qu'un voisin Wi-Fi Aware est vu, pour ouvrir un lien de données. */
+    var onPeerFound: ((String) -> Unit)? = null
 
     /** Démarre la découverte. [myIdHex] est l'identifiant de ce téléphone (texte hexadécimal). */
     fun start(myIdHex: String, countListener: (Int) -> Unit, logListener: (String) -> Unit) {
@@ -56,6 +62,16 @@ class WifiAwareDiscovery(private val context: Context) {
         }
     }
 
+    /**
+     * Session et poignée d'un voisin, pour ouvrir un lien de données avec lui.
+     * Retourne null si ce voisin n'a pas encore été vu.
+     */
+    fun handleFor(id: String): Pair<SubscribeDiscoverySession, PeerHandle>? {
+        val session = subscribeSession ?: return null
+        val handle = handles[id] ?: return null
+        return Pair(session, handle)
+    }
+
     private fun startPublishAndSubscribe(session: WifiAwareSession) {
         try {
             val publishConfig = PublishConfig.Builder()
@@ -81,16 +97,19 @@ class WifiAwareDiscovery(private val context: Context) {
 
         override fun onSubscribeStarted(session: SubscribeDiscoverySession) {
             sessions.add(session)
+            subscribeSession = session
             log("Wi-Fi Aware : recherche active")
         }
 
         override fun onServiceDiscovered(peerHandle: PeerHandle, serviceSpecificInfo: ByteArray, matchFilter: List<ByteArray>) {
             val id = String(serviceSpecificInfo, Charsets.UTF_8)
             if (id.isEmpty() || id == myId) return
+            handles[id] = peerHandle
             if (peers.add(id)) {
                 log("Wi-Fi Aware : pair ${id.take(8)} trouvé")
                 main.post { onCount?.invoke(peers.size) }
             }
+            main.post { onPeerFound?.invoke(id) }
         }
 
         override fun onSessionTerminated() {
@@ -104,7 +123,9 @@ class WifiAwareDiscovery(private val context: Context) {
         sessions.clear()
         try { wifiSession?.close() } catch (e: Throwable) { }
         wifiSession = null
+        subscribeSession = null
         peers.clear()
+        handles.clear()
         main.post { onCount?.invoke(0) }
     }
 
