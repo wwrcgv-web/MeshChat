@@ -23,10 +23,13 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.concurrent.Executors
 
 /** Un message affiché dans une conversation. */
 data class ChatBubble(
@@ -38,7 +41,8 @@ data class ChatBubble(
     val audio: String? = null,
     val time: String = timeNow(),
     val status: String? = null,
-    val msgId: String? = null
+    val msgId: String? = null,
+    val imagePath: String? = null
 )
 
 /** Ordre d'avancement d'un statut : un message ne revient jamais à un statut moins avancé. */
@@ -100,7 +104,8 @@ private class LivePlayer {
 
 /**
  * Mémoire de l'application : journal, conversations, pairs, contacts.
- * Elle vit tant que le service tourne, donc les messages reçus écran fermé sont gardés.
+ * Elle vit tant que le service tourne. Les conversations sont aussi sauvegardées sur le téléphone,
+ * pour être retrouvées après un redémarrage de l'app.
  */
 object MeshState {
     const val PUBLIC = "public"
@@ -113,6 +118,8 @@ object MeshState {
     private const val LIVE_GAP_MS = 3_000L
     private const val CHANNEL_MESSAGES = "meshchat_messages"
     private const val MAX_NOTIF_TEXT = 120
+    private const val HISTORY_FILE = "historique.json"
+    private const val MEDIA_DIR = "media"
 
     val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
@@ -135,6 +142,12 @@ object MeshState {
 
     private var appContext: Context? = null
 
+    /** Sauvegarde de l'historique, faite en arrière-plan pour ne pas bloquer l'écran. */
+    private val saver = Executors.newSingleThreadExecutor()
+    private var historyFile: File? = null
+    private var mediaDir: File? = null
+    private var historyLoaded = false
+
     /** Nombre d'écrans de l'app visibles. Zéro : l'app est en arrière-plan ou fermée. */
     @Volatile private var startedActivities = 0
     private var callbacksRegistered = false
@@ -142,6 +155,7 @@ object MeshState {
     /** Branché une seule fois, par le service. Les messages arrivent ensuite, écran fermé ou non. */
     fun attach(context: Context) {
         appContext = context.applicationContext
+        loadHistory(context.applicationContext)
         BleMeshManager.listener = { line -> onLine(line) }
         BleMeshManager.peersListener = { list ->
             peers = list
@@ -150,6 +164,113 @@ object MeshState {
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
         BleMeshManager.liveListener = { sender, audio -> onLive(sender, audio) }
         registerVisibilityTracking(context.applicationContext)
+    }
+
+    /** Recharge les conversations sauvegardées. Ne se fait qu'une fois par lancement de l'app. */
+    private fun loadHistory(context: Context) {
+        if (historyLoaded) return
+        historyLoaded = true
+        val dir = File(context.filesDir, MEDIA_DIR).apply { mkdirs() }
+        mediaDir = dir
+        val file = File(context.filesDir, HISTORY_FILE)
+        historyFile = file
+        if (!file.exists()) return
+        try {
+            val array = JSONArray(file.readText())
+            val loaded = ArrayList<ChatBubble>()
+            for (i in 0 until array.length()) {
+                val o = array.getJSONObject(i)
+                val imagePath = o.optString("imagePath").takeIf { it.isNotEmpty() && File(it).exists() }
+                val image = imagePath?.let {
+                    BitmapFactory.decodeFile(it, BitmapFactory.Options().apply { inSampleSize = 2 })
+                }
+                val audio = o.optString("audio").takeIf { it.isNotEmpty() && File(it).exists() }
+                loaded.add(
+                    ChatBubble(
+                        mine = o.optBoolean("mine"),
+                        author = o.optString("author"),
+                        text = o.optString("text"),
+                        image = image,
+                        chat = o.optString("chat", PUBLIC),
+                        audio = audio,
+                        time = o.optString("time", timeNow()),
+                        status = o.optString("status").takeIf { it.isNotEmpty() },
+                        msgId = o.optString("msgId").takeIf { it.isNotEmpty() },
+                        imagePath = imagePath
+                    )
+                )
+            }
+            bubbles.addAll(loaded.takeLast(MAX_BUBBLES))
+        } catch (e: Exception) {
+            // Fichier illisible : on repart d'un historique vide, sans bloquer l'app
+        }
+    }
+
+    /** Écrit les conversations sur le téléphone, en arrière-plan. */
+    private fun saveHistory() {
+        val file = historyFile ?: return
+        val array = JSONArray()
+        for (b in bubbles) {
+            array.put(
+                JSONObject().apply {
+                    put("mine", b.mine)
+                    put("author", b.author)
+                    put("text", b.text)
+                    put("chat", b.chat)
+                    put("time", b.time)
+                    put("status", b.status ?: "")
+                    put("msgId", b.msgId ?: "")
+                    put("audio", b.audio ?: "")
+                    put("imagePath", b.imagePath ?: "")
+                }
+            )
+        }
+        val content = array.toString()
+        saver.execute {
+            try {
+                val tmp = File(file.absolutePath + ".tmp")
+                tmp.writeText(content)
+                tmp.renameTo(file)
+            } catch (e: Exception) {
+                // Échec d'écriture : l'historique reste en mémoire, on réessaiera au prochain message
+            }
+        }
+    }
+
+    /** Copie un vocal dans le stockage permanent de l'app, pour qu'Android ne le supprime pas avec le cache. */
+    private fun keepAudio(path: String?): String? {
+        if (path == null) return null
+        val dir = mediaDir ?: return path
+        val src = File(path)
+        if (!src.exists() || src.parentFile == dir) return path
+        val dst = File(dir, "${System.currentTimeMillis()}_${src.name}")
+        return try {
+            src.copyTo(dst, overwrite = true)
+            dst.absolutePath
+        } catch (e: Exception) {
+            path
+        }
+    }
+
+    /** Enregistre une photo sur le téléphone, si elle ne l'est pas déjà. Retourne son chemin. */
+    private fun keepImage(bitmap: Bitmap?, existing: String?): String? {
+        if (existing != null) return existing
+        if (bitmap == null) return null
+        val dir = mediaDir ?: return null
+        val file = File(dir, "img_${System.currentTimeMillis()}.jpg")
+        return try {
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 85, it) }
+            file.absolutePath
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Retire le message le plus ancien, et supprime sa photo et son vocal du téléphone. */
+    private fun removeOldest() {
+        val old = bubbles.removeAt(0)
+        old.audio?.let { File(it).delete() }
+        old.imagePath?.let { File(it).delete() }
     }
 
     /** Suit les écrans ouverts, pour savoir si l'app est à l'écran. Enregistré une seule fois. */
@@ -193,9 +314,14 @@ object MeshState {
     fun addBubble(b: ChatBubble) {
         // Si le statut est arrivé avant la bulle (envoi sans pair à portée), on l'applique tout de suite
         val known = b.msgId?.let { statusById[it] }
-        val shown = if (known != null && rank(known) > rank(b.status)) b.copy(status = known) else b
+        val withStatus = if (known != null && rank(known) > rank(b.status)) b.copy(status = known) else b
+        val shown = withStatus.copy(
+            audio = keepAudio(withStatus.audio),
+            imagePath = keepImage(withStatus.image, withStatus.imagePath)
+        )
         bubbles.add(shown)
-        if (bubbles.size > MAX_BUBBLES) bubbles.removeAt(0)
+        if (bubbles.size > MAX_BUBBLES) removeOldest()
+        saveHistory()
     }
 
     /** Met à jour le statut d'un message privé, sans jamais revenir à un statut moins avancé. */
@@ -203,10 +329,15 @@ object MeshState {
         if (rank(status) < rank(statusById[id])) return
         if (statusById.size > MAX_STATUSES) statusById.clear()
         statusById[id] = status
+        var changed = false
         for (i in bubbles.indices) {
             val b = bubbles[i]
-            if (b.msgId == id && rank(status) >= rank(b.status)) bubbles[i] = b.copy(status = status)
+            if (b.msgId == id && rank(status) >= rank(b.status)) {
+                bubbles[i] = b.copy(status = status)
+                changed = true
+            }
         }
+        if (changed) saveHistory()
     }
 
     private fun count(key: String) {
