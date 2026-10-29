@@ -186,12 +186,12 @@ private const val PUBLIC = "public"
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
 
-/** Titre affiché au-dessus d'une bulle. */
+/** Titre affiché au-dessus d'une bulle : le nom du contact, ou anonXXXX tant qu'on ne le connaît pas. */
 private fun bubbleTitle(b: ChatBubble): String = when {
     b.mine -> "Moi"
     b.author == "photo" -> "Photo"
     b.author == "vocal" -> "Vocal"
-    else -> "@${pseudoFrom(b.author.take(8))}"
+    else -> "@${MeshState.nameOf(b.author)}"
 }
 
 /** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth. */
@@ -203,12 +203,6 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     val out = ByteArrayOutputStream()
     small.compress(Bitmap.CompressFormat.JPEG, 40, out)
     return out.toByteArray()
-}
-
-/** Pseudo lisible à partir de l'identifiant Bluetooth, par exemple anon1053. */
-private fun pseudoFrom(shortId: String): String {
-    val number = (shortId.toLongOrNull(16) ?: 0L) % 10000L
-    return "anon" + number.toString().padStart(4, '0')
 }
 
 /** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
@@ -273,9 +267,9 @@ private fun CircleButton(label: String, background: Color, textColor: Color, siz
     }
 }
 
-/** Bouton de choix de conversation (Tous, ou un téléphone). */
+/** Bouton de choix de conversation. Un contact hors de portée apparaît en grisé. */
 @Composable
-private fun ChatChip(label: String, selected: Boolean, green: Color, inkColor: Color, onClick: () -> Unit) {
+private fun ChatChip(label: String, selected: Boolean, online: Boolean, green: Color, inkColor: Color, onClick: () -> Unit) {
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(
@@ -283,7 +277,12 @@ private fun ChatChip(label: String, selected: Boolean, green: Color, inkColor: C
         ),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
     ) {
-        Text(label, color = if (selected) Color.White else inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+        val textColor = when {
+            selected -> Color.White
+            online -> inkColor
+            else -> inkColor.copy(alpha = 0.4f)
+        }
+        Text(label, color = textColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
@@ -297,21 +296,35 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var showDebug by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
+    var nameInput by remember { mutableStateOf("") }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
+    var myName by remember { mutableStateOf(prefs.getString("my_name", "") ?: "") }
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
 
     // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
+    val contacts = MeshState.contacts
     val pseudo = MeshState.pseudo
     val journal = MeshState.journal
     val bubbles = MeshState.bubbles
     val counts = MeshState.counts
+    val displayName = if (myName.isNotBlank()) myName else pseudo
 
     fun log(line: String) = MeshState.addJournal(line)
 
     fun c(key: String): Int = counts[key] ?: 0
+
+    /** Enregistre le nom choisi. Il sera envoyé aux téléphones rencontrés. */
+    fun saveName(raw: String) {
+        val clean = raw.trim().take(20)
+        if (clean.isBlank()) return
+        prefs.edit().putString("my_name", clean).apply()
+        myName = clean
+        MeshState.refresh()
+    }
 
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
@@ -333,11 +346,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
     LaunchedEffect(selectedChat) {
         if (selectedChat != PUBLIC) BleMeshManager.instance?.markRead(selectedChat)
-    }
-
-    // Si la discussion choisie n'est plus à portée, on revient à « Tous »
-    LaunchedEffect(peers) {
-        if (selectedChat != PUBLIC && peers.none { it.id == selectedChat }) selectedChat = PUBLIC
     }
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
@@ -437,6 +445,31 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         }
     }
 
+    // Premier lancement : le nom est demandé, et il est obligatoire
+    if (myName.isBlank()) {
+        AlertDialog(
+            onDismissRequest = { },
+            title = { Text("Bienvenue sur Samchat") },
+            text = {
+                Column {
+                    Text("Choisis le nom que verront les autres téléphones.", fontSize = 14.sp)
+                    Spacer(Modifier.height(12.dp))
+                    TextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it.take(20) },
+                        singleLine = true,
+                        placeholder = { Text("ton nom") }
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { saveName(nameInput) }, enabled = nameInput.isNotBlank()) {
+                    Text("Continuer")
+                }
+            }
+        )
+    }
+
     if (showPicker) {
         AlertDialog(
             onDismissRequest = { showPicker = false },
@@ -464,8 +497,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
             },
             text = {
                 Column {
-                    Text("Pseudo : /@$pseudo", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Pseudo : /@$displayName", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs Wi-Fi Aware : ${MeshState.wifiPeers}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -510,6 +544,26 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                             Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
                             TextButton(onClick = { showSettings = false }) { Text("✕", fontSize = 18.sp, color = inkColor) }
+                        }
+
+                        Spacer(Modifier.height(20.dp))
+                        Text("NOM D'UTILISATEUR", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        TextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it.take(20) },
+                            singleLine = true,
+                            placeholder = { Text("votre nom", color = grey) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { saveName(nameInput) },
+                            enabled = nameInput.isNotBlank(),
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = green)
+                        ) {
+                            Text("Enregistrer", color = Color.White, fontSize = 14.sp)
                         }
 
                         Spacer(Modifier.height(20.dp))
@@ -574,10 +628,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : /@pseudo, mesh, pairs et ⚙ paramètres
+            // En-tête : /@nom, mesh, pairs et ⚙ paramètres
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    "/@$pseudo",
+                    "/@$displayName",
                     color = green,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
@@ -588,7 +642,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
                 Text("👥 ${peers.size}", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = { showSettings = true }) { Text("⚙", fontSize = 18.sp) }
+                TextButton(onClick = { nameInput = myName; showSettings = true }) { Text("⚙", fontSize = 18.sp) }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -620,13 +674,19 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
 
             Spacer(Modifier.height(8.dp))
 
-            // Choix de la conversation : Tous, puis chaque téléphone trouvé
+            // Choix de la conversation : Tous, puis chaque contact (grisé s'il est hors de portée)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 item {
-                    ChatChip("Tous", selectedChat == PUBLIC, green, inkColor) { selectedChat = PUBLIC }
+                    ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor) { selectedChat = PUBLIC }
                 }
-                items(peers) { p ->
-                    ChatChip("@${pseudoFrom(p.id.take(8))}", selectedChat == p.id, green, inkColor) { selectedChat = p.id }
+                items(contacts) { contact ->
+                    ChatChip(
+                        "@${MeshState.nameOf(contact.id)}",
+                        selectedChat == contact.id,
+                        peers.any { it.id == contact.id },
+                        green,
+                        inkColor
+                    ) { selectedChat = contact.id }
                 }
             }
 
@@ -634,15 +694,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
 
             // Titre de la conversation affichée
             Text(
-                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${pseudoFrom(selectedChat.take(8))}",
+                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
                 color = grey,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace
             )
 
-            // Conversation : message « Aucun appareil détecté » si personne n'est à portée, sinon les bulles
+            // Conversation : message « Aucun appareil détecté » s'il n'y a ni contact ni message, sinon les bulles
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (visible.isEmpty() && peers.isEmpty()) {
+                if (visible.isEmpty() && contacts.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(top = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
