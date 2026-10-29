@@ -39,7 +39,7 @@ object MeshState {
     private const val MAX_JOURNAL = 200
     private const val MAX_BUBBLES = 500
 
-    val journal = mutableStateListOf("MeshChat prêt.")
+    val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
     val counts = mutableStateMapOf<String, Int>()
     var peers by mutableStateOf(listOf<MeshPeer>())
