@@ -12,11 +12,13 @@ import android.os.IBinder
 import com.example.meshchat.MeshState
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.wifi.WifiAwareDiscovery
+import com.example.meshchat.wifi.WifiAwareTransfer
 
-/** Service de premier plan : garde MeshChat actif (Bluetooth, Wi-Fi Aware, réserve) même écran éteint. */
+/** Service de premier plan : garde MeshChat actif (Bluetooth, Wi-Fi Aware, transferts, réserve) même écran éteint. */
 class MeshService : Service() {
     private var manager: BleMeshManager? = null
     private var wifi: WifiAwareDiscovery? = null
+    private var transfer: WifiAwareTransfer? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -46,10 +48,16 @@ class MeshService : Service() {
         return START_STICKY
     }
 
-    /** Wi-Fi Aware tourne ici, dans le service : il continue écran fermé, comme le Bluetooth. */
+    /** Wi-Fi Aware tourne ici : découverte, liens de données et transferts continuent écran fermé. */
     private fun startWifiAware(m: BleMeshManager) {
         val discovery = WifiAwareDiscovery(applicationContext)
+        val tr = WifiAwareTransfer(applicationContext, discovery) { line -> BleMeshManager.instance?.emit(line) }
         wifi = discovery
+        transfer = tr
+        // Le serveur d'écoute doit exister avant les liens, pour pouvoir annoncer son port
+        tr.start { flag, payload -> BleMeshManager.instance?.onWifiBlob(flag, payload) }
+        BleMeshManager.wifiSender = { flag, payload, to -> tr.sendBlob(flag, payload, to) }
+        discovery.onPeerFound = { id -> tr.ensureLink(id) }
         val myHex = m.myId.joinToString("") { "%02x".format(it) }
         discovery.start(myHex, { MeshState.wifiPeers = it }, { MeshState.addJournal(it) })
     }
@@ -72,6 +80,9 @@ class MeshService : Service() {
     }
 
     override fun onDestroy() {
+        BleMeshManager.wifiSender = null
+        transfer?.stop()
+        transfer = null
         wifi?.stop()
         wifi = null
         manager?.stop()
