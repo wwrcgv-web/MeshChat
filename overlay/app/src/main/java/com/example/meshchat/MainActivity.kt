@@ -52,11 +52,9 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
-import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareSupport
 import java.io.ByteArrayOutputStream
 import java.io.File
-import kotlinx.coroutines.delay
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
 class VoiceRecorder(private val context: Context) {
@@ -294,7 +292,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
-    var wifiPeers by remember { mutableStateOf(0) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
@@ -304,7 +301,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val context = LocalContext.current
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
-    val wifiDiscovery = remember { WifiAwareDiscovery(context) }
 
     // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
@@ -333,25 +329,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
     val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
-
-    // Wi-Fi Aware : démarre quand le service est actif, s'arrête quand il s'arrête
-    LaunchedEffect(AppState.serviceOn) {
-        if (AppState.serviceOn) {
-            var tries = 0
-            while (BleMeshManager.instance == null && tries < 30) {
-                delay(300)
-                tries++
-            }
-            val manager = BleMeshManager.instance
-            if (manager != null) {
-                val myHex = manager.myId.joinToString("") { "%02x".format(it) }
-                wifiDiscovery.start(myHex, { wifiPeers = it }, { line -> log(line) })
-            }
-        } else {
-            wifiDiscovery.stop()
-            wifiPeers = 0
-        }
-    }
 
     // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
     LaunchedEffect(selectedChat) {
@@ -491,7 +468,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Pairs Wi-Fi Aware : $wifiPeers", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Pairs Wi-Fi Aware : ${MeshState.wifiPeers}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
