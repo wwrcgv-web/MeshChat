@@ -28,6 +28,16 @@ data class ChatBubble(
     val msgId: String? = null
 )
 
+/** Ordre d'avancement d'un statut : un message ne revient jamais à un statut moins avancé. */
+private fun rank(status: String?): Int = when (status) {
+    "✓✓ Lu" -> 5
+    "✓✓ Reçu" -> 4
+    "✓ Parti" -> 3
+    "⏳ En attente" -> 2
+    "✗ Non envoyé" -> 1
+    else -> 0
+}
+
 /**
  * Mémoire de l'application : journal, conversations, pairs.
  * Elle vit tant que le service tourne, donc les messages reçus écran fermé sont gardés.
@@ -38,6 +48,7 @@ object MeshState {
     private const val KIND_AUDIO: Byte = 2
     private const val MAX_JOURNAL = 200
     private const val MAX_BUBBLES = 500
+    private const val MAX_STATUSES = 1000
 
     val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
@@ -46,6 +57,9 @@ object MeshState {
     var pseudo by mutableStateOf("anon0000")
     /** Nombre de pairs trouvés par Wi-Fi Aware (rempli par le service). */
     var wifiPeers by mutableStateOf(0)
+
+    /** Dernier statut connu de chaque message privé, pour les bulles créées après l'arrivée du statut. */
+    private val statusById = HashMap<String, String>()
 
     private var appContext: Context? = null
 
@@ -63,8 +77,22 @@ object MeshState {
     }
 
     fun addBubble(b: ChatBubble) {
-        bubbles.add(b)
+        // Si le statut est arrivé avant la bulle (envoi sans pair à portée), on l'applique tout de suite
+        val known = b.msgId?.let { statusById[it] }
+        val shown = if (known != null && rank(known) > rank(b.status)) b.copy(status = known) else b
+        bubbles.add(shown)
         if (bubbles.size > MAX_BUBBLES) bubbles.removeAt(0)
+    }
+
+    /** Met à jour le statut d'un message privé, sans jamais revenir à un statut moins avancé. */
+    private fun setStatus(id: String, status: String) {
+        if (rank(status) < rank(statusById[id])) return
+        if (statusById.size > MAX_STATUSES) statusById.clear()
+        statusById[id] = status
+        for (i in bubbles.indices) {
+            val b = bubbles[i]
+            if (b.msgId == id && rank(status) >= rank(b.status)) bubbles[i] = b.copy(status = status)
+        }
     }
 
     private fun count(key: String) {
@@ -81,11 +109,21 @@ object MeshState {
                 // « Statut <identifiant> reçu » ou « Statut <identifiant> lu »
                 val rest = line.removePrefix("Statut ")
                 val id = rest.substringBefore(" ")
-                val newStatus = if (rest.endsWith("lu")) "✓✓ Lu" else "✓✓ Reçu"
-                for (i in bubbles.indices) {
-                    val b = bubbles[i]
-                    if (b.msgId == id && b.status != "✓✓ Lu") bubbles[i] = b.copy(status = newStatus)
-                }
+                setStatus(id, if (rest.endsWith("lu")) "✓✓ Lu" else "✓✓ Reçu")
+            }
+            line.startsWith("Parti ") -> {
+                // Au moins un téléphone a reçu tous les morceaux
+                setStatus(line.removePrefix("Parti ").trim(), "✓ Parti")
+                addJournal(line)
+            }
+            line.startsWith("Non envoyé ") -> {
+                count("fail")
+                setStatus(line.removePrefix("Non envoyé ").trim(), "✗ Non envoyé")
+                addJournal(line)
+            }
+            line.startsWith("En attente ") -> {
+                setStatus(line.removePrefix("En attente ").trim(), "⏳ En attente")
+                addJournal(line)
             }
             line.startsWith("Reçu privé de ") -> {
                 count("in_text")
