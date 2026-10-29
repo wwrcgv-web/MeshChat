@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import com.example.meshchat.MeshState
 import com.example.meshchat.ble.BleMeshManager
 
 /** Service de premier plan : garde MeshChat actif (annonce, scan, réserve) même écran éteint. */
@@ -17,6 +18,8 @@ class MeshService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        // La mémoire de l'app reçoit les messages dès la création du service, écran fermé ou non
+        MeshState.attach(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(CHANNEL_ID, "MeshChat", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
