@@ -17,6 +17,12 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.crypto.SecretKey
 
 /** Un téléphone trouvé, identifié par son identifiant MeshChat (16 caractères hexadécimaux). */
@@ -27,12 +33,31 @@ private fun String.hexToBytes(): ByteArray = chunked(2).map { it.toInt(16).toByt
 
 @SuppressLint("MissingPermission")
 class BleMeshManager(private val context: Context) {
+
+    /** Suivi d'un envoi privé vers plusieurs pairs : « Parti » si au moins un a reçu, sinon « Non envoyé ». */
+    private class SendGroup(val msgId: String, val total: Int) {
+        @Volatile var done = 0
+        @Volatile var ok = 0
+    }
+
+    /** Une connexion à un pair, avec les trames à lui envoyer. */
+    private class BleJob(val device: BluetoothDevice, val frames: List<ByteArray>, val group: SendGroup?)
+
+    /** Résultat d'une tentative de connexion : réussie ou non, avec la raison. */
+    private class Attempt(val ok: Boolean, val reason: String)
+
     private val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private val serviceUuid = UUID.fromString("0000ffff-0000-1000-8000-00805f9b34fb")
     private val characteristicUuid = UUID.fromString("0000feee-0000-1000-8000-00805f9b34fb")
     private var server: BluetoothGattServer? = null
     private var advertising = false
-    private var scanning = false
+    @Volatile private var scanning = false
+    @Volatile private var stopped = false
+
+    /** Une seule connexion Bluetooth à la fois : les envois font la queue ici. */
+    private val bleExecutor = Executors.newSingleThreadExecutor()
+    /** Connexions en attente ou en cours. Le scan reprend quand ce compteur revient à zéro. */
+    private val pendingJobs = AtomicInteger(0)
 
     /** Préférences du téléphone : identifiant, clés, et clés des pairs rencontrés. */
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
@@ -162,14 +187,31 @@ class BleMeshManager(private val context: Context) {
 
     fun startScan() {
         if (scanning) return
-        val scanner = adapter?.bluetoothLeScanner ?: run { emit("Scan indisponible"); return }
+        if (adapter?.bluetoothLeScanner == null) { emit("Scan indisponible"); return }
+        if (startScanQuietly()) emit("Recherche de pairs...")
+    }
+
+    /** Démarre le scan sans rien écrire dans le journal. Retourne true si le scan a démarré. */
+    private fun startScanQuietly(): Boolean {
+        if (scanning || stopped) return false
+        val scanner = adapter?.bluetoothLeScanner ?: return false
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
-        try {
+        return try {
             scanner.startScan(listOf(filter), settings, scanCallback)
             scanning = true
-            emit("Recherche de pairs...")
-        } catch (e: SecurityException) { emit("Permission scan manquante") }
+            true
+        } catch (e: SecurityException) {
+            emit("Permission scan manquante")
+            false
+        }
+    }
+
+    /** Arrête le scan pendant un envoi : Android ne sait pas bien ouvrir une connexion en même temps. */
+    private fun pauseScan() {
+        if (!scanning) return
+        try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (e: SecurityException) { Log.w(TAG, "Pause du scan impossible", e) }
+        scanning = false
     }
 
     fun startGattServer() {
@@ -191,7 +233,8 @@ class BleMeshManager(private val context: Context) {
      * Envoie un message texte.
      * Sans [toPeerId] : message public (200 octets maximum), relayé par les téléphones intermédiaires.
      * Avec [toPeerId] : message privé chiffré (180 octets maximum), relayé, illisible pour les intermédiaires.
-     * Retourne le nombre de pairs visés, ou 1 si le message public est mis en attente.
+     * Retourne le nombre de pairs visés, ou 1 si le message est gardé en attente.
+     * Le résultat réel arrive ensuite dans le journal : « Parti », « Non envoyé » ou « En attente », avec l'identifiant.
      */
     fun sendMessage(text: String, toPeerId: String? = null): Int {
         lastSentId = null
@@ -232,19 +275,21 @@ class BleMeshManager(private val context: Context) {
         val cipher = CryptoEngine.encrypt(bytes, key)
         store.add(msgId, tag, cipher)
         if (targets.isEmpty()) {
+            emit("En attente ${msgId.toHex()}")
             emit("Aucun pair : message privé gardé en attente (10 min)")
             return 1
         }
         // Trame : type (1) + TTL (1) + identifiant (8) + étiquette (8) + données chiffrées
         val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) + msgId + tag + cipher
-        targets.forEach { sendTo(it, frame) }
+        val group = SendGroup(msgId.toHex(), targets.size)
+        targets.forEach { enqueue(it, listOf(frame), group) }
         return targets.size
     }
 
     /**
      * Envoie une photo, un vocal, un fichier ou une vidéo.
      * D'abord par Wi-Fi Aware (voisins directs, sans limite de taille).
-     * Sinon par Bluetooth, en fragments, pour les petits contenus seulement.
+     * Sinon par Bluetooth, en fragments, pour les petits contenus seulement (250 Ko maximum).
      * Sans [toPeerId] : envoi public. Avec [toPeerId] : contenu chiffré de bout en bout.
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
@@ -265,7 +310,7 @@ class BleMeshManager(private val context: Context) {
 
         // Repli Bluetooth : seulement pour les petits contenus
         if (payload.size > MAX_BLE_BLOB) {
-            emit("Fichier trop lourd pour le Bluetooth (${bytes.size / 1024} Ko) : Wi-Fi Aware nécessaire")
+            emit("Fichier refusé : ${bytes.size / 1024} Ko, limite Bluetooth ${MAX_BLE_BLOB / 1000} Ko")
             return 0
         }
         val targets = peers.values.toList()
@@ -275,7 +320,7 @@ class BleMeshManager(private val context: Context) {
         // Trame : type (1) + TTL (1) + drapeau public/privé (1) + fragment (identifiant du contenu, numéro, total, données)
         val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT, ttl.toByte(), flag.toByte()) + it }
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
-        targets.forEach { sendFramesTo(it, frames) }
+        targets.forEach { enqueue(it, frames) }
         return targets.size
     }
 
@@ -307,57 +352,144 @@ class BleMeshManager(private val context: Context) {
     /** Trame d'échange de clé : type (1) + mon identifiant (8) + ma clé publique. */
     private fun keyFrame(): ByteArray = byteArrayOf(TYPE_KEY) + myId + CryptoEngine.encodePublic(keyPair.public)
 
-    private fun sendTo(device: BluetoothDevice, frame: ByteArray) = sendFramesTo(device, listOf(frame))
+    /** Envoie une trame à un pair, via la file d'attente. */
+    private fun sendTo(device: BluetoothDevice, frame: ByteArray) = enqueue(device, listOf(frame))
 
-    /** Ouvre une connexion et envoie les trames une par une, en attendant la confirmation de chaque envoi. */
-    private fun sendFramesTo(device: BluetoothDevice, frames: List<ByteArray>) {
-        if (frames.isEmpty()) return
+    /**
+     * Met une connexion dans la file d'attente. Une seule connexion est ouverte à la fois.
+     * Le scan est arrêté dès qu'un envoi est en attente, et repris quand la file est vide.
+     */
+    private fun enqueue(device: BluetoothDevice, frames: List<ByteArray>, group: SendGroup? = null) {
+        if (frames.isEmpty() || stopped) return
+        pendingJobs.incrementAndGet()
+        pauseScan()
+        try {
+            bleExecutor.execute { runJob(BleJob(device, frames, group)) }
+        } catch (e: RejectedExecutionException) {
+            finishJob()
+        }
+    }
+
+    /** Exécute une connexion de la file. Ne jamais l'appeler directement : passer par enqueue. */
+    private fun runJob(job: BleJob) {
+        try {
+            val ok = try {
+                sendWithRetry(job.device, job.frames)
+            } catch (e: Exception) {
+                Log.w(TAG, "Envoi interrompu", e)
+                false
+            }
+            job.group?.let { g ->
+                g.done++
+                if (ok) g.ok++
+                if (g.done == g.total) {
+                    if (g.ok > 0) emit("Parti ${g.msgId}") else emit("Non envoyé ${g.msgId}")
+                }
+            }
+        } finally {
+            finishJob()
+        }
+    }
+
+    /** Une connexion terminée : si plus rien n'attend, le scan reprend. */
+    private fun finishJob() {
+        if (pendingJobs.decrementAndGet() == 0) startScanQuietly()
+    }
+
+    /** Essaie jusqu'à trois fois, avec une pause qui s'allonge entre les essais. */
+    private fun sendWithRetry(device: BluetoothDevice, frames: List<ByteArray>): Boolean {
+        for (attempt in 1..MAX_ATTEMPTS) {
+            val result = connectAndWrite(device, frames)
+            if (result.ok) {
+                emit("Envoyé à ${device.address}")
+                return true
+            }
+            emit("Échec envoi à ${device.address} (${result.reason}), essai $attempt/$MAX_ATTEMPTS")
+            if (attempt < MAX_ATTEMPTS) Thread.sleep(RETRY_PAUSE_MS * attempt)
+        }
+        return false
+    }
+
+    /** Une connexion complète : ouvre le lien, écrit toutes les trames, puis ferme. Retourne le résultat. */
+    private fun connectAndWrite(device: BluetoothDevice, frames: List<ByteArray>): Attempt {
+        val finished = CountDownLatch(1)
+        val outcome = AtomicReference<Attempt?>(null)
+        fun finish(result: Attempt) {
+            if (outcome.compareAndSet(null, result)) finished.countDown()
+        }
+
         var index = 0
-        val cb = object : BluetoothGattCallback() {
+        var characteristic: BluetoothGattCharacteristic? = null
+
+        fun writeNext(gatt: BluetoothGatt) {
+            val ch = characteristic
+            if (ch == null) {
+                finish(Attempt(false, "service introuvable"))
+                gatt.disconnect()
+                return
+            }
+            ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            ch.value = frames[index]
+            if (!gatt.writeCharacteristic(ch)) {
+                finish(Attempt(false, "écriture refusée"))
+                gatt.disconnect()
+            }
+        }
+
+        val connectCallback = object : BluetoothGattCallback() {
             override fun onConnectionStateChange(gatt: BluetoothGatt?, status: Int, newState: Int) {
                 if (newState == BluetoothProfile.STATE_CONNECTED) {
-                    gatt?.requestMtu(247)
+                    if (gatt?.requestMtu(247) != true) gatt?.discoverServices()
                 } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
-                    if (status != BluetoothGatt.GATT_SUCCESS) emit("Échec connexion à ${device.address} (code $status)")
+                    finish(Attempt(false, "code $status"))
                     gatt?.close()
                 }
             }
+
             override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
                 gatt?.discoverServices()
             }
+
             override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
-                val ch = gatt?.getService(serviceUuid)?.getCharacteristic(characteristicUuid)
-                if (gatt == null || ch == null) {
-                    emit("Service MeshChat introuvable chez ${device.address}")
-                    gatt?.disconnect()
-                    return
-                }
-                writeFrame(gatt, ch, frames[index])
+                if (gatt == null) return
+                characteristic = gatt.getService(serviceUuid)?.getCharacteristic(characteristicUuid)
+                writeNext(gatt)
             }
+
             override fun onCharacteristicWrite(gatt: BluetoothGatt?, ch: BluetoothGattCharacteristic?, status: Int) {
                 if (gatt == null) return
                 if (status != BluetoothGatt.GATT_SUCCESS) {
-                    emit("Échec envoi (code $status)")
+                    finish(Attempt(false, "écriture code $status"))
                     gatt.disconnect()
                     return
                 }
                 index++
                 if (index < frames.size) {
-                    ch?.let { writeFrame(gatt, it, frames[index]) }
+                    writeNext(gatt)
                 } else {
-                    emit("Envoyé à ${device.address}")
+                    finish(Attempt(true, ""))
                     gatt.disconnect()
                 }
             }
         }
-        try { device.connectGatt(context, false, cb, BluetoothDevice.TRANSPORT_LE) } catch (e: SecurityException) { emit("Permission connexion manquante") }
+
+        val handle: BluetoothGatt? = try {
+            device.connectGatt(context, false, connectCallback, BluetoothDevice.TRANSPORT_LE)
+        } catch (e: SecurityException) {
+            return Attempt(false, "permission refusée")
+        }
+
+        val timeoutMs = TIMEOUT_BASE_MS + frames.size * TIMEOUT_PER_FRAME_MS
+        if (!finished.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+            finish(Attempt(false, "délai dépassé"))
+            handle?.disconnect()
+            handle?.close()
+        }
+        return outcome.get() ?: Attempt(false, "inconnu")
     }
 
-    private fun writeFrame(gatt: BluetoothGatt, ch: BluetoothGattCharacteristic, frame: ByteArray) {
-        ch.writeType = BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-        ch.value = frame
-        gatt.writeCharacteristic(ch)
-    }
+    /** Envoie une trame à un pair, comme message isolé. */
+    private fun sendFramesTo(device: BluetoothDevice, frames: List<ByteArray>) = enqueue(device, frames)
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
@@ -375,21 +507,21 @@ class BleMeshManager(private val context: Context) {
                     }
                     emit("Pair trouvé : ${id.take(8)}")
                     publishPeers()
-                    // Premier échange : on envoie notre clé publique, puis les messages gardés pour ce pair
-                    sendFramesTo(r.device, listOf(keyFrame()) + storedFramesFor(id))
-                    sendQueuedTo(r.device)
+                    // Premier contact : une seule connexion pour la clé, les messages gardés et les messages publics en attente
+                    val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
+                    enqueue(r.device, frames)
                 }
             }
         }
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
     }
 
-    /** Envoie au nouveau pair les messages publics qui attendaient. */
-    private fun sendQueuedTo(device: BluetoothDevice) {
+    /** Trames des messages publics qui attendaient un pair. Vide s'il n'y en a pas. */
+    private fun queuedFrames(): List<ByteArray> {
         val pending = queue.drain()
-        if (pending.isEmpty()) return
+        if (pending.isEmpty()) return emptyList()
         emit("Envoi de ${pending.size} message(s) en attente")
-        pending.forEach { sendTo(device, textFrame(it)) }
+        return pending.map { textFrame(it) }
     }
 
     private val gattCallback = object : BluetoothGattServerCallback() {
@@ -590,6 +722,8 @@ class BleMeshManager(private val context: Context) {
     }
 
     fun stop() {
+        stopped = true
+        bleExecutor.shutdownNow()
         try { if (scanning) adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (e: SecurityException) { Log.w(TAG, "Arrêt scan impossible", e) }
         try { if (advertising) adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback) } catch (e: SecurityException) { Log.w(TAG, "Arrêt annonce impossible", e) }
         try { server?.close() } catch (e: SecurityException) { Log.w(TAG, "Fermeture serveur impossible", e) }
@@ -611,6 +745,12 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_SEEN_FRAGMENTS = 5000
         /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
         private const val MAX_BLE_BLOB = 250_000
+        /** Nombre d'essais par connexion, et pause de base entre deux essais. */
+        private const val MAX_ATTEMPTS = 3
+        private const val RETRY_PAUSE_MS = 1_500L
+        /** Délai maximal d'une connexion : une base, plus un peu par trame à envoyer. */
+        private const val TIMEOUT_BASE_MS = 20_000L
+        private const val TIMEOUT_PER_FRAME_MS = 500L
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
