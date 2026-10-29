@@ -114,7 +114,8 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    private fun emit(msg: String) {
+    /** Envoie une ligne au journal (et au compteur de debug). Aussi utilisé par le Wi-Fi Aware. */
+    fun emit(msg: String) {
         Log.i(TAG, msg)
         main.post { listener?.invoke(msg) }
     }
@@ -241,13 +242,12 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Envoie une photo ou un vocal, découpé en fragments.
-     * Sans [toPeerId] : envoi public, voisins directs. Avec [toPeerId] : contenu chiffré entièrement, relayé jusqu'au destinataire.
+     * Envoie une photo, un vocal, un fichier ou une vidéo.
+     * D'abord par Wi-Fi Aware (voisins directs, sans limite de taille).
+     * Sinon par Bluetooth, en fragments, pour les petits contenus seulement.
+     * Sans [toPeerId] : envoi public. Avec [toPeerId] : contenu chiffré de bout en bout.
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
-        val targets = peers.values.toList()
-        if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
-
         val payload = if (toPeerId == null) {
             bytes
         } else {
@@ -257,8 +257,19 @@ class BleMeshManager(private val context: Context) {
             }
             CryptoEngine.encrypt(bytes, key)
         }
-
         val flag = if (toPeerId == null) FLAG_PUBLIC else FLAG_PRIVATE
+
+        // Wi-Fi Aware en premier
+        val viaWifi = wifiSender?.invoke(flag, payload, toPeerId) ?: 0
+        if (viaWifi > 0) return viaWifi
+
+        // Repli Bluetooth : seulement pour les petits contenus
+        if (payload.size > MAX_BLE_BLOB) {
+            emit("Fichier trop lourd pour le Bluetooth (${bytes.size / 1024} Ko) : Wi-Fi Aware nécessaire")
+            return 0
+        }
+        val targets = peers.values.toList()
+        if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
         val ttl = if (toPeerId == null) 1 else MeshPacket.DEFAULT_TTL
         val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
         // Trame : type (1) + TTL (1) + drapeau public/privé (1) + fragment (identifiant du contenu, numéro, total, données)
@@ -272,6 +283,23 @@ class BleMeshManager(private val context: Context) {
     fun markRead(peerId: String) {
         val list = pendingRead.remove(peerId) ?: return
         list.forEach { sendAck(peerId, it.hexToBytes(), KIND_READ) }
+    }
+
+    /** Contenu reçu par Wi-Fi Aware : même traitement que par Bluetooth. Appelé par le service. */
+    fun onWifiBlob(flag: Int, payload: ByteArray) {
+        if (flag == FLAG_PUBLIC) {
+            deliverBlob(payload, null)
+            return
+        }
+        val opened = openForMe(payload) ?: return
+        deliverBlob(opened.second, opened.first)
+    }
+
+    /** Remet un contenu complet à l'écran. [from] vaut null pour la conversation générale. */
+    private fun deliverBlob(bytes: ByteArray, from: String?) {
+        emit("Fichier reçu : ${bytes.size} octets")
+        val receive = blobListener
+        if (receive != null) main.post { receive(bytes, from) }
     }
 
     private fun textFrame(packet: MeshPacket): ByteArray = byteArrayOf(TYPE_TEXT) + packet.encode()
@@ -529,17 +557,13 @@ class BleMeshManager(private val context: Context) {
         val bytes = assembly.assemble()
 
         if (flag == FLAG_PUBLIC) {
-            emit("Fichier reçu : ${bytes.size} octets")
-            val receive = blobListener
-            if (receive != null) main.post { receive(bytes, null) }
+            deliverBlob(bytes, null)
             return
         }
 
         // Fichier privé : on n'affiche que s'il est pour nous (déchiffrement réussi)
         val opened = openForMe(bytes) ?: return
-        emit("Fichier reçu : ${opened.second.size} octets")
-        val receive = blobListener
-        if (receive != null) main.post { receive(opened.second, opened.first) }
+        deliverBlob(opened.second, opened.first)
     }
 
     /** Transmet un fragment privé à tous les pairs, sauf celui qui vient de nous l'envoyer. */
@@ -585,6 +609,8 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_TEXT_BYTES = 200
         private const val MAX_PRIVATE_BYTES = 180
         private const val MAX_SEEN_FRAGMENTS = 5000
+        /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
+        private const val MAX_BLE_BLOB = 250_000
         private const val TYPE_TEXT: Byte = 1
         private const val TYPE_FRAGMENT: Byte = 2
         private const val TYPE_KEY: Byte = 3
@@ -600,11 +626,16 @@ class BleMeshManager(private val context: Context) {
         /** L'écran branche ici une fonction pour recevoir les messages du journal. */
         @Volatile var listener: ((String) -> Unit)? = null
         /**
-         * L'écran branche ici une fonction pour recevoir un fichier complet.
-         * Le second paramètre vaut null pour la conversation générale, ou l'identifiant de l'expéditeur pour une discussion privée.
+         * Reçoit un contenu complet. Le second paramètre vaut null pour la conversation générale,
+         * ou l'identifiant de l'expéditeur pour une discussion privée.
          */
         @Volatile var blobListener: ((ByteArray, String?) -> Unit)? = null
         /** L'écran branche ici une fonction pour recevoir la liste des téléphones identifiés. */
         @Volatile var peersListener: ((List<MeshPeer>) -> Unit)? = null
+        /**
+         * Envoi par Wi-Fi Aware, branché par le service.
+         * Reçoit (drapeau, contenu, destinataire) et retourne le nombre de voisins joignables (0 = repli Bluetooth).
+         */
+        @Volatile var wifiSender: ((Int, ByteArray, String?) -> Int)? = null
     }
 }
