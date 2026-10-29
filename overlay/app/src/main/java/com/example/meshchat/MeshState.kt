@@ -1,14 +1,26 @@
 package com.example.meshchat
 
+import android.Manifest
+import android.app.Activity
+import android.app.Application
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.MediaPlayer
+import android.os.Build
+import android.os.Bundle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import java.io.File
@@ -99,6 +111,8 @@ object MeshState {
     private const val MAX_STATUSES = 1000
     /** Délai sans morceau de voix au-delà duquel une nouvelle prise de parole est annoncée dans le journal. */
     private const val LIVE_GAP_MS = 3_000L
+    private const val CHANNEL_MESSAGES = "meshchat_messages"
+    private const val MAX_NOTIF_TEXT = 120
 
     val journal = mutableStateListOf("Samchat prêt.")
     val bubbles = mutableStateListOf<ChatBubble>()
@@ -121,6 +135,10 @@ object MeshState {
 
     private var appContext: Context? = null
 
+    /** Nombre d'écrans de l'app visibles. Zéro : l'app est en arrière-plan ou fermée. */
+    @Volatile private var startedActivities = 0
+    private var callbacksRegistered = false
+
     /** Branché une seule fois, par le service. Les messages arrivent ensuite, écran fermé ou non. */
     fun attach(context: Context) {
         appContext = context.applicationContext
@@ -131,6 +149,25 @@ object MeshState {
         }
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
         BleMeshManager.liveListener = { sender, audio -> onLive(sender, audio) }
+        registerVisibilityTracking(context.applicationContext)
+    }
+
+    /** Suit les écrans ouverts, pour savoir si l'app est à l'écran. Enregistré une seule fois. */
+    private fun registerVisibilityTracking(app: Context) {
+        if (callbacksRegistered) return
+        val application = app as? Application ?: return
+        application.registerActivityLifecycleCallbacks(visibilityCallbacks)
+        callbacksRegistered = true
+    }
+
+    private val visibilityCallbacks = object : Application.ActivityLifecycleCallbacks {
+        override fun onActivityStarted(activity: Activity) { startedActivities++ }
+        override fun onActivityStopped(activity: Activity) { if (startedActivities > 0) startedActivities-- }
+        override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {}
+        override fun onActivityResumed(activity: Activity) {}
+        override fun onActivityPaused(activity: Activity) {}
+        override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) {}
+        override fun onActivityDestroyed(activity: Activity) {}
     }
 
     /** Recalcule le pseudo et la liste des contacts à partir du gestionnaire Bluetooth. */
@@ -176,6 +213,53 @@ object MeshState {
         counts[key] = (counts[key] ?: 0) + 1
     }
 
+    /**
+     * Affiche une notification de message, seulement si Samchat n'est pas à l'écran.
+     * Une notification par conversation : les messages suivants la mettent à jour.
+     */
+    private fun notifyMessage(key: String, title: String, text: String) {
+        if (startedActivities > 0) return
+        val context = appContext ?: return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+
+        val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            manager.createNotificationChannel(
+                NotificationChannel(CHANNEL_MESSAGES, "Messages", NotificationManager.IMPORTANCE_HIGH)
+            )
+        }
+        val open = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: Intent()
+        val id = key.hashCode()
+        val pending = PendingIntent.getActivity(
+            context, id, open, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Notification.Builder(context, CHANNEL_MESSAGES)
+        } else {
+            @Suppress("DEPRECATION") Notification.Builder(context)
+        }
+        val notification = builder
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(title)
+            .setContentText(text.take(MAX_NOTIF_TEXT))
+            .setContentIntent(pending)
+            .setAutoCancel(true)
+            .build()
+        try {
+            manager.notify(id, notification)
+        } catch (e: SecurityException) {
+            // Permission retirée entre-temps : on ne bloque pas la réception
+        }
+    }
+
+    /** Notification d'un vocal ou d'une photo : privée si l'expéditeur est connu, sinon sur « Tous ». */
+    private fun notifyBlob(from: String?, text: String) {
+        if (from == null) notifyMessage(PUBLIC, "Tous", text)
+        else notifyMessage("p$from", "@${nameOf(from)}", text)
+    }
+
     private fun onLine(line: String) {
         when {
             line.startsWith("Mon identifiant : ") -> {
@@ -213,6 +297,7 @@ object MeshState {
                 val sender = rest.substringBefore(" : ")
                 val text = rest.substringAfter(" : ", "")
                 addBubble(ChatBubble(false, sender, text, null, sender))
+                notifyMessage("p$sender", "@${nameOf(sender)}", text)
             }
             line.startsWith("Reçu de ") -> {
                 count("in_text")
@@ -220,6 +305,7 @@ object MeshState {
                 val sender = rest.substringBefore(" : ")
                 val text = rest.substringAfter(" : ", "")
                 addBubble(ChatBubble(false, sender, text, null, PUBLIC))
+                notifyMessage(PUBLIC, "Tous · @${nameOf(sender)}", text)
             }
             line.startsWith("Pair trouvé") -> addJournal(line)
             line.startsWith("Fichier reçu") -> { count("in_file"); addJournal(line) }
@@ -253,6 +339,7 @@ object MeshState {
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes.copyOfRange(1, bytes.size))
             addBubble(ChatBubble(false, from ?: "vocal", "Vocal reçu", null, from ?: PUBLIC, file.absolutePath))
+            notifyBlob(from, "Vocal reçu")
         } else if (bytes.isNotEmpty() && bytes[0] == KIND_PHOTO) {
             BitmapFactory.decodeByteArray(bytes, 1, bytes.size - 1)?.let { photo ->
                 if (from == null) {
@@ -260,6 +347,7 @@ object MeshState {
                 } else {
                     addBubble(ChatBubble(false, from, "Photo reçue", photo, from))
                 }
+                notifyBlob(from, "Photo reçue")
             }
         }
     }
