@@ -14,7 +14,7 @@ import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareTransfer
 
-/** Service de premier plan : garde MeshChat actif (Bluetooth, Wi-Fi Aware, transferts, réserve) même écran éteint. */
+/** Service de premier plan : garde Samchat actif (Bluetooth, Wi-Fi Aware, transferts, réserve) même écran éteint. */
 class MeshService : Service() {
     private var manager: BleMeshManager? = null
     private var wifi: WifiAwareDiscovery? = null
@@ -25,7 +25,7 @@ class MeshService : Service() {
         // La mémoire de l'app reçoit les messages dès la création du service, écran fermé ou non
         MeshState.attach(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(CHANNEL_ID, "MeshChat", NotificationManager.IMPORTANCE_LOW)
+            val channel = NotificationChannel(CHANNEL_ID, "Samchat", NotificationManager.IMPORTANCE_LOW)
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
     }
@@ -71,7 +71,7 @@ class MeshService : Service() {
             @Suppress("DEPRECATION") Notification.Builder(this)
         }
         return builder
-            .setContentTitle("MeshChat actif")
+            .setContentTitle("Samchat actif")
             .setContentText("Service Bluetooth en cours")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentIntent(pending)
