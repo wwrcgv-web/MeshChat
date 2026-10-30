@@ -56,48 +56,92 @@ private fun rank(status: String?): Int = when (status) {
 }
 
 /**
- * Lecteur du live : joue les morceaux un à la fois, dans l'ordre.
- * Si un morceau arrive pendant qu'un autre joue, il attend. Si un autre arrive avant la fin, le plus ancien
- * en attente est abandonné : on joue toujours le plus récent, jamais un son en retard.
+ * Lecteur unique de l'app : un seul son à la fois (vocal reçu, vocal envoyé ou live).
+ * Lancer un son coupe celui qui joue, comme WhatsApp.
  */
-private class LivePlayer {
+object Playback {
     private var player: MediaPlayer? = null
-    private var pending: File? = null
+    private var owner: Any? = null
+    private var onDone: (() -> Unit)? = null
 
-    /** Propose un morceau au lecteur : il joue tout de suite, ou prend la place du morceau en attente. */
-    fun offer(file: File) {
-        if (player == null) {
-            startNow(file)
-        } else {
-            pending?.delete()
-            pending = file
+    /** Chemin du son en cours de lecture. Sert à afficher « Arrêter » sur le bon vocal. */
+    var currentPath by mutableStateOf<String?>(null)
+        private set
+
+    /** Joue un fichier. [owner] identifie qui le joue, [onFinished] est appelé à la fin normale. */
+    fun play(path: String, owner: Any, onFinished: (() -> Unit)? = null) {
+        stop()
+        val p = MediaPlayer()
+        try {
+            p.setDataSource(path)
+            p.setOnCompletionListener { finish(it) }
+            p.setOnErrorListener { mp, _, _ -> finish(mp); true }
+            p.prepare()
+            p.start()
+            player = p
+            this.owner = owner
+            this.onDone = onFinished
+            currentPath = path
+        } catch (e: Exception) {
+            try { p.release() } catch (e2: Exception) { }
+            onFinished?.invoke()
         }
     }
 
-    private fun startNow(file: File) {
-        val p = MediaPlayer()
-        player = p
-        var ended = false
-        // Fin du morceau, normale ou en erreur : on libère le lecteur une seule fois, puis on enchaîne
-        val end = {
-            if (!ended) {
-                ended = true
-                try { p.release() } catch (e: Exception) { }
-                file.delete()
-                if (player === p) player = null
-                val next = pending
-                pending = null
-                if (next != null) startNow(next)
-            }
+    /** Arrête le son en cours, sans appeler le « fin de lecture » de son propriétaire. */
+    fun stop() {
+        val p = player ?: return
+        player = null
+        owner = null
+        onDone = null
+        currentPath = null
+        try { p.stop() } catch (e: Exception) { }
+        try { p.release() } catch (e: Exception) { }
+    }
+
+    /** Vrai si le son en cours appartient à [who]. */
+    fun isOwnedBy(who: Any): Boolean = owner === who
+
+    private fun finish(mp: MediaPlayer) {
+        if (mp !== player) {
+            try { mp.release() } catch (e: Exception) { }
+            return
         }
-        try {
-            p.setDataSource(file.absolutePath)
-            p.setOnCompletionListener { end() }
-            p.setOnErrorListener { _, _, _ -> end(); true }
-            p.prepare()
-            p.start()
-        } catch (e: Exception) {
-            end()
+        val callback = onDone
+        player = null
+        owner = null
+        onDone = null
+        currentPath = null
+        try { mp.release() } catch (e: Exception) { }
+        callback?.invoke()
+    }
+}
+
+/**
+ * File du live : un morceau joue, le plus récent en attente remplace les autres.
+ * Le live passe avant un vocal en cours, car il est en direct.
+ */
+private object LivePlayer {
+    private val owner = Any()
+    private var pending: File? = null
+
+    fun offer(file: File) {
+        if (Playback.isOwnedBy(owner)) {
+            pending?.delete()
+            pending = file
+        } else {
+            pending?.delete()
+            pending = null
+            playNow(file)
+        }
+    }
+
+    private fun playNow(file: File) {
+        Playback.play(file.absolutePath, owner) {
+            file.delete()
+            val next = pending
+            pending = null
+            if (next != null) playNow(next)
         }
     }
 }
@@ -137,7 +181,6 @@ object MeshState {
     /** Dernier statut connu de chaque message privé, pour les bulles créées après l'arrivée du statut. */
     private val statusById = HashMap<String, String>()
 
-    private val livePlayer = LivePlayer()
     private var liveActiveUntil = 0L
 
     private var appContext: Context? = null
@@ -460,7 +503,7 @@ object MeshState {
         liveActiveUntil = now + LIVE_GAP_MS
         val file = File(context.cacheDir, "live_${now}.m4a")
         file.writeBytes(audio)
-        livePlayer.offer(file)
+        LivePlayer.offer(file)
     }
 
     /** Photo ou vocal complet reçu. Le premier octet indique le type. */
