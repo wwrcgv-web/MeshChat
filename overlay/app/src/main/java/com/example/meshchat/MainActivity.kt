@@ -898,6 +898,25 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                             colors = SwitchDefaults.colors(checkedTrackColor = green)
                         )
 
+                        // Partage de l'application, par le menu Android (Bluetooth, Nearby Share, etc.)
+                        Spacer(Modifier.height(16.dp))
+                        Text("PARTAGER", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = {
+                                if (!ShareApp.share(context)) log("Partage impossible")
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = blue)
+                        ) {
+                            Text("Partager Samchat", color = Color.White, fontSize = 14.sp)
+                        }
+                        Text(
+                            "Envoie l'application par Bluetooth ou Nearby Share, sans internet.",
+                            color = grey,
+                            fontSize = 12.sp
+                        )
+
                         Spacer(Modifier.height(16.dp))
                         Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
