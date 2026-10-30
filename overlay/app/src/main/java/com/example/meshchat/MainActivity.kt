@@ -3,6 +3,7 @@ package com.example.meshchat
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,8 +12,10 @@ import android.graphics.BitmapFactory
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -308,6 +311,37 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     val out = ByteArrayOutputStream()
     small.compress(Bitmap.CompressFormat.JPEG, 40, out)
     return out.toByteArray()
+}
+
+/**
+ * Copie un fichier de l'app dans Téléchargements/Samchat, pour qu'il reste visible et utilisable.
+ * Retourne le nom du fichier enregistré, ou null en cas d'échec.
+ */
+private fun saveToDownloads(context: Context, source: String, mime: String, prefix: String): String? {
+    val src = File(source)
+    if (!src.exists()) return null
+    val ext = src.extension.ifEmpty { "bin" }
+    val name = "${prefix}_${System.currentTimeMillis()}.$ext"
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Samchat")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { input -> input.copyTo(out) }
+            } ?: return null
+        } else {
+            val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Samchat")
+            dir.mkdirs()
+            src.copyTo(File(dir, name), overwrite = true)
+        }
+        name
+    } catch (e: Exception) {
+        null
+    }
 }
 
 /** Informations de distribution de cette copie, affichées dans les outils de debug. */
@@ -1011,6 +1045,31 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                                                 fontSize = 14.sp,
                                                 fontWeight = FontWeight.Bold,
                                                 modifier = Modifier.clickable { VoiceRecorder.play(path) }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        // Bouton de téléchargement : copie la photo ou le vocal dans Téléchargements/Samchat
+                                        b.imagePath?.let { path ->
+                                            Text(
+                                                "⬇ Enregistrer la photo",
+                                                color = blue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable {
+                                                    val name = saveToDownloads(context, path, "image/jpeg", "photo")
+                                                    log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        b.audio?.let { path ->
+                                            Text(
+                                                "⬇ Enregistrer le vocal",
+                                                color = blue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable {
+                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                }.padding(vertical = 4.dp)
                                             )
                                         }
                                         Text(b.text, color = inkColor, fontSize = 15.sp)
