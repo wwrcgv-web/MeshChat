@@ -2,7 +2,11 @@ package com.example.meshchat.ble
 
 import java.security.MessageDigest
 
-/** Réserve de messages privés chiffrés gardés pour un destinataire absent. */
+/**
+ * Réserve de messages privés chiffrés, gardés pour un destinataire absent.
+ * Chaque téléphone garde les messages des autres : ainsi, un déplacement peut transporter un message
+ * jusqu'à son destinataire.
+ */
 class MeshStore {
     class Item(val id: ByteArray, val tag: ByteArray, val cipher: ByteArray, val expiresAt: Long)
 
@@ -28,8 +32,10 @@ class MeshStore {
     }
 
     companion object {
-        const val MAX_ITEMS = 50
-        const val KEEP_MS = 10 * 60 * 1000L
+        /** Nombre maximal de messages gardés pour les autres. */
+        const val MAX_ITEMS = 500
+        /** Durée de conservation : 24 heures, pour que les déplacements transportent les messages. */
+        const val KEEP_MS = 24 * 60 * 60 * 1000L
         const val TAG_SIZE = 8
 
         /** Étiquette = empreinte de l'identifiant du destinataire (on ne peut pas remonter à l'identifiant). */
