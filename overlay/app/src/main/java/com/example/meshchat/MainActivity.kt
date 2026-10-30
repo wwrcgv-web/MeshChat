@@ -8,7 +8,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
@@ -111,16 +110,18 @@ class VoiceRecorder(private val context: Context) {
     }
 
     companion object {
-        /** Joue un fichier audio, puis libère le lecteur à la fin. */
+        /** Identifie les vocaux joués par l'écran, dans le lecteur commun. */
+        private val owner = Any()
+
+        /**
+         * Lance un vocal, ou l'arrête si c'est celui qui joue déjà.
+         * Un seul son à la fois dans l'app : un appui sur un autre vocal coupe le premier.
+         */
         fun play(path: String) {
-            try {
-                val player = MediaPlayer()
-                player.setDataSource(path)
-                player.setOnCompletionListener { it.release() }
-                player.prepare()
-                player.start()
-            } catch (e: Exception) {
-                // Fichier illisible : on ne bloque pas l'écran
+            if (Playback.currentPath == path) {
+                Playback.stop()
+            } else {
+                Playback.play(path, owner)
             }
         }
     }
@@ -1002,8 +1003,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                                             Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
                                         }
                                         b.audio?.let { path ->
+                                            // Le texte suit le lecteur commun : « Arrêter » sur le vocal qui joue
+                                            val playing = Playback.currentPath == path
                                             Text(
-                                                "▶ Écouter le vocal",
+                                                if (playing) "■ Arrêter le vocal" else "▶ Écouter le vocal",
                                                 color = green,
                                                 fontSize = 14.sp,
                                                 fontWeight = FontWeight.Bold,
