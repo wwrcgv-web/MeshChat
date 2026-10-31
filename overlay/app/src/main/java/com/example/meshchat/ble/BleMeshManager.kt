@@ -155,10 +155,19 @@ class BleMeshManager(private val context: Context) {
     /** Paire de clés de ce téléphone, gardée entre les lancements (la clé privée ne quitte jamais le téléphone). */
     private val keyPair: KeyPair = loadOrCreateKeyPair()
 
+    /** Interrupteur Bluetooth BLE. Désactivé : pas d'annonce, pas de recherche, pas de serveur. */
+    @Volatile var bleOn: Boolean = true
+        private set
+
     init {
         instance = this
+        bleOn = prefs.getBoolean(PREF_BLE, true)
         loadPeerKeys()
     }
+
+    /** Vrai si ce téléphone sait utiliser le mode longue portée (Coded PHY). */
+    private val longRangeSupported: Boolean
+        get() = adapter?.isLeCodedPhySupported == true
 
     /**
      * Nom d'utilisateur de ce téléphone, choisi au premier lancement. Vide tant qu'il n'est pas choisi.
@@ -282,14 +291,46 @@ class BleMeshManager(private val context: Context) {
         return null
     }
 
+    /**
+     * Interrupteur Bluetooth BLE, appelé depuis l'écran.
+     * Désactivé : plus d'annonce, de recherche ni de serveur, et les pairs visibles disparaissent.
+     * Les contacts et les clés restent. Le service continue de tourner.
+     */
+    fun setBleEnabled(on: Boolean) {
+        if (on == bleOn) return
+        bleOn = on
+        if (on) {
+            if (stopped) return
+            emit("Bluetooth BLE activé")
+            startGattServer()
+            startAdvertising()
+        } else {
+            emit("Bluetooth BLE désactivé")
+            pauseScan()
+            try {
+                if (advertising) adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback)
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Arrêt annonce impossible", e)
+            }
+            advertising = false
+            try { server?.close() } catch (e: SecurityException) { Log.w(TAG, "Fermeture serveur impossible", e) }
+            server = null
+            peers.clear()
+            peerIds.clear()
+            lastSeen.clear()
+            publishPeers()
+        }
+    }
+
     fun startAdvertising() {
         emit("Mon identifiant : ${myId.toHex().take(8)}")
         emit("Clés mémorisées : ${peerKeys.size}")
         val advertiser = adapter?.bluetoothLeAdvertiser ?: run { emit("Annonce Bluetooth indisponible"); return }
+        // Puissance d'annonce maximale : le téléphone est repéré de plus loin
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_LOW_LATENCY)
             .setConnectable(true).setTimeout(0)
-            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM).build()
+            .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_HIGH).build()
         val data = AdvertiseData.Builder().addServiceUuid(ParcelUuid(serviceUuid)).setIncludeDeviceName(false).build()
         // L'identifiant voyage dans la « réponse au scan » : les autres téléphones le lisent en cherchant
         val response = AdvertiseData.Builder().addManufacturerData(COMPANY_ID, myId).setIncludeDeviceName(false).build()
@@ -307,7 +348,7 @@ class BleMeshManager(private val context: Context) {
 
     /** Démarre le scan sans rien écrire dans le journal. Retourne true si le scan a démarré. */
     private fun startScanQuietly(): Boolean {
-        if (scanning || stopped) return false
+        if (scanning || stopped || !bleOn) return false
         val scanner = adapter?.bluetoothLeScanner ?: return false
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build()
         val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
@@ -359,7 +400,7 @@ class BleMeshManager(private val context: Context) {
                 emit("Message trop long (200 caractères maximum)")
                 return 0
             }
-            val packet = MeshPacket(UUID.randomUUID(), myId, ByteArray(MeshPacket.ID_SIZE), MeshPacket.DEFAULT_TTL, text)
+            val packet = MeshPacket(UUID.randomUUID(), myId, ByteArray(MeshPacket.ID_SIZE), RELAY_TTL, text)
             seenIds.add(packet.id)
             val targets = peers.values.toList()
             if (targets.isEmpty()) {
@@ -394,7 +435,7 @@ class BleMeshManager(private val context: Context) {
             return 1
         }
         // Trame : type (1) + TTL (1) + identifiant (8) + étiquette (8) + données chiffrées
-        val frame = byteArrayOf(TYPE_SECRET, MeshPacket.DEFAULT_TTL.toByte()) + msgId + tag + cipher
+        val frame = byteArrayOf(TYPE_SECRET, RELAY_TTL.toByte()) + msgId + tag + cipher
         val group = SendGroup(msgId.toHex(), targets.size)
         targets.forEach { enqueue(it, listOf(frame), group) }
         return targets.size
@@ -436,6 +477,7 @@ class BleMeshManager(private val context: Context) {
     private fun runLive(toPeerId: String, tag: ByteArray, seq: Int, cipher: ByteArray) {
         val viaWifi = wifiSender?.invoke(FLAG_LIVE, tag + seq.toBytes4() + cipher, toPeerId) ?: 0
         if (viaWifi > 0) return
+        if (!bleOn) return
 
         val device = peers.entries.firstOrNull { peerIds[it.key] == toPeerId }?.value ?: return
         val total = (cipher.size + LIVE_PART_BYTES - 1) / LIVE_PART_BYTES
@@ -490,7 +532,7 @@ class BleMeshManager(private val context: Context) {
             return 0
         }
         val targets = peers.values.toList()
-        val ttl = if (toPeerId == null) 1 else MeshPacket.DEFAULT_TTL
+        val ttl = if (toPeerId == null) 1 else RELAY_TTL
         val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
         // Trame : type (1) + TTL (1) + drapeau public/privé (1) + fragment (identifiant du contenu, numéro, total, données)
         val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT, ttl.toByte(), flag.toByte()) + it }
@@ -610,6 +652,11 @@ class BleMeshManager(private val context: Context) {
      */
     private fun enqueue(device: BluetoothDevice, frames: List<ByteArray>, group: SendGroup? = null) {
         if (frames.isEmpty() || stopped) return
+        if (!bleOn) {
+            // Bluetooth désactivé : l'envoi est compté comme échoué, pour que le statut reste juste
+            group?.let { finishGroup(it, false) }
+            return
+        }
         pendingJobs.incrementAndGet()
         pauseScan()
         try {
@@ -633,22 +680,25 @@ class BleMeshManager(private val context: Context) {
     /** Exécute une connexion de la file. Ne jamais l'appeler directement : passer par enqueue. */
     private fun runJob(job: BleJob) {
         try {
-            val ok = try {
+            val ok = if (!bleOn) false else try {
                 sendWithRetry(job.device, job.frames)
             } catch (e: Exception) {
                 Log.w(TAG, "Envoi interrompu", e)
                 false
             }
-            job.group?.let { g ->
-                g.done++
-                if (ok) g.ok++
-                if (g.done == g.total) {
-                    if (g.ok > 0) emit("Parti ${g.msgId}") else emit("Non envoyé ${g.msgId}")
-                    g.onFinished?.invoke(g.ok > 0)
-                }
-            }
+            job.group?.let { finishGroup(it, ok) }
         } finally {
             finishJob()
+        }
+    }
+
+    /** Compte un pair terminé dans un envoi de groupe, et annonce le résultat quand tous ont répondu. */
+    private fun finishGroup(g: SendGroup, ok: Boolean) {
+        g.done++
+        if (ok) g.ok++
+        if (g.done == g.total) {
+            if (g.ok > 0) emit("Parti ${g.msgId}") else emit("Non envoyé ${g.msgId}")
+            g.onFinished?.invoke(g.ok > 0)
         }
     }
 
@@ -674,7 +724,10 @@ class BleMeshManager(private val context: Context) {
         return false
     }
 
-    /** Une connexion complète : ouvre le lien, écrit toutes les trames, puis ferme. Retourne le résultat. */
+    /**
+     * Une connexion complète : ouvre le lien, écrit toutes les trames, puis ferme. Retourne le résultat.
+     * Le mode longue portée (Coded PHY) n'est demandé que si l'interrupteur est actif et si le téléphone le supporte.
+     */
     private fun connectAndWrite(device: BluetoothDevice, frames: List<ByteArray>, timeoutMs: Long): Attempt {
         val finished = CountDownLatch(1)
         val outcome = AtomicReference<Attempt?>(null)
@@ -737,8 +790,13 @@ class BleMeshManager(private val context: Context) {
             }
         }
 
+        val phy = if (prefs.getBoolean(PREF_LONG_RANGE, true) && longRangeSupported) {
+            BluetoothDevice.PHY_LE_1M_MASK or BluetoothDevice.PHY_LE_CODED_MASK
+        } else {
+            BluetoothDevice.PHY_LE_1M_MASK
+        }
         val handle: BluetoothGatt? = try {
-            device.connectGatt(context, false, connectCallback, BluetoothDevice.TRANSPORT_LE)
+            device.connectGatt(context, false, connectCallback, BluetoothDevice.TRANSPORT_LE, phy)
         } catch (e: SecurityException) {
             return Attempt(false, "permission refusée")
         }
@@ -750,9 +808,6 @@ class BleMeshManager(private val context: Context) {
         }
         return outcome.get() ?: Attempt(false, "inconnu")
     }
-
-    /** Envoie une trame à un pair, comme message isolé. */
-    private fun sendFramesTo(device: BluetoothDevice, frames: List<ByteArray>) = enqueue(device, frames)
 
     private val scanCallback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
@@ -960,7 +1015,7 @@ class BleMeshManager(private val context: Context) {
         val ackId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(ackId.toHex())
         val cipher = CryptoEngine.encrypt(byteArrayOf(kind) + originalId, key)
-        val frame = byteArrayOf(TYPE_ACK, MeshPacket.DEFAULT_TTL.toByte()) + ackId + cipher
+        val frame = byteArrayOf(TYPE_ACK, RELAY_TTL.toByte()) + ackId + cipher
         peers.values.toList().forEach { sendTo(it, frame) }
     }
 
@@ -1090,6 +1145,11 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_SEEN_FRAGMENTS = 5000
         /** Longueur maximale d'un nom d'utilisateur, en caractères. */
         private const val MAX_NAME_CHARS = 20
+        /**
+         * Nombre de sauts d'un message : chaque téléphone qui le reçoit le transmet encore,
+         * jusqu'à épuisement. Plus il est grand, plus un message peut voyager loin.
+         */
+        private const val RELAY_TTL = 8
         /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
         private const val MAX_BLE_BLOB = 250_000
         /** Fichiers privés gardés pour les contacts absents : nombre maximal, et durée de conservation. */
@@ -1123,6 +1183,9 @@ class BleMeshManager(private val context: Context) {
         private const val FLAG_PRIVATE = 1
         /** Drapeau du morceau de voix en direct par Wi-Fi. Doit rester identique à LIVE_FLAG dans WifiAwareTransfer. */
         private const val FLAG_LIVE = 2
+        /** Préférences des interrupteurs radio. Doivent rester identiques à celles de l'écran. */
+        const val PREF_BLE = "radio_ble"
+        const val PREF_LONG_RANGE = "radio_long_range"
         /** Code fabricant utilisé pour porter l'identifiant MeshChat dans la réponse au scan. */
         const val COMPANY_ID = 0xFFFE
         @Volatile var instance: BleMeshManager? = null
