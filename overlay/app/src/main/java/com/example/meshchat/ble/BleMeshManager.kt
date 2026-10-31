@@ -17,6 +17,7 @@ import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.PriorityBlockingQueue
 import java.util.concurrent.RejectedExecutionException
@@ -46,8 +47,15 @@ private fun ByteArray.toInt4(offset: Int): Int =
 @SuppressLint("MissingPermission")
 class BleMeshManager(private val context: Context) {
 
-    /** Suivi d'un envoi privé vers plusieurs pairs : « Parti » si au moins un a reçu, sinon « Non envoyé ». */
-    private class SendGroup(val msgId: String, val total: Int) {
+    /**
+     * Suivi d'un envoi vers un ou plusieurs pairs : « Parti » si au moins un a reçu, sinon « Non envoyé ».
+     * [onFinished] reçoit true si l'envoi a réussi.
+     */
+    private class SendGroup(
+        val msgId: String,
+        val total: Int,
+        val onFinished: ((Boolean) -> Unit)? = null
+    ) {
         @Volatile var done = 0
         @Volatile var ok = 0
     }
@@ -78,6 +86,14 @@ class BleMeshManager(private val context: Context) {
         val parts = arrayOfNulls<ByteArray>(total)
     }
 
+    /** Photo, vocal ou fichier privé gardé pour un contact absent. Il part à sa prochaine rencontre. */
+    private class PendingBlob(
+        val msgId: String,
+        val tag: ByteArray,
+        val frames: List<ByteArray>,
+        val expiresAt: Long
+    )
+
     private val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private val serviceUuid = UUID.fromString("0000ffff-0000-1000-8000-00805f9b34fb")
     private val characteristicUuid = UUID.fromString("0000feee-0000-1000-8000-00805f9b34fb")
@@ -100,11 +116,16 @@ class BleMeshManager(private val context: Context) {
     /** Dernier numéro de morceau reçu de chaque contact, pour ignorer les morceaux anciens. */
     private val lastLiveSeq = ConcurrentHashMap<String, Int>()
 
+    /** Photos, vocaux et fichiers privés en attente d'un contact absent. */
+    private val pendingBlobs = CopyOnWriteArrayList<PendingBlob>()
+
     /** Préférences du téléphone : identifiant, nom, clés, et contacts rencontrés. */
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
 
     private val peers = ConcurrentHashMap<String, BluetoothDevice>()   // adresse Bluetooth -> appareil
     private val peerIds = ConcurrentHashMap<String, String>()          // adresse Bluetooth -> identifiant MeshChat
+    /** Dernière fois qu'un téléphone a été vu à portée, par adresse Bluetooth. Au-delà du délai, il est considéré absent. */
+    private val lastSeen = ConcurrentHashMap<String, Long>()
     private val peerKeys = ConcurrentHashMap<String, PublicKey>()      // identifiant MeshChat -> clé publique (gardée entre les lancements)
     private val peerNames = ConcurrentHashMap<String, String>()        // identifiant MeshChat -> nom d'utilisateur (gardé entre les lancements)
     private val seenIds: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
@@ -116,7 +137,16 @@ class BleMeshManager(private val context: Context) {
     private val store = MeshStore()
     private val main = Handler(Looper.getMainLooper())
 
-    /** Identifiant du dernier message privé envoyé (pour suivre ses accusés). Null pour un message public. */
+    /** Vérifie régulièrement quels téléphones ne sont plus à portée. */
+    private val sweeper = object : Runnable {
+        override fun run() {
+            if (stopped) return
+            sweepPeers()
+            main.postDelayed(this, SWEEP_MS)
+        }
+    }
+
+    /** Identifiant du dernier message privé ou fichier envoyé (pour suivre ses accusés). Null pour un envoi public. */
     @Volatile var lastSentId: String? = null
 
     /** Identifiant fixe de ce téléphone, gardé entre les lancements. */
@@ -209,6 +239,24 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
+     * Retire les téléphones qui n'ont plus donné signe de vie depuis le délai.
+     * Quand ils reviendront, ils seront traités comme une nouvelle rencontre.
+     */
+    private fun sweepPeers() {
+        val now = System.currentTimeMillis()
+        var removed = false
+        for (mac in peers.keys.toList()) {
+            if (now - (lastSeen[mac] ?: 0L) > PEER_TIMEOUT_MS) {
+                peers.remove(mac)
+                peerIds.remove(mac)
+                lastSeen.remove(mac)
+                removed = true
+            }
+        }
+        if (removed) publishPeers()
+    }
+
+    /**
      * Tous les téléphones déjà rencontrés, même hors de portée : identifiant et nom.
      * Ils sont gardés dans les préférences, donc la liste survit au redémarrage.
      */
@@ -247,6 +295,8 @@ class BleMeshManager(private val context: Context) {
         val response = AdvertiseData.Builder().addManufacturerData(COMPANY_ID, myId).setIncludeDeviceName(false).build()
         try { advertiser.startAdvertising(settings, data, response, callback) } catch (e: SecurityException) { emit("Permission Bluetooth manquante") }
         startScan()
+        main.removeCallbacks(sweeper)
+        main.postDelayed(sweeper, SWEEP_MS)
     }
 
     fun startScan() {
@@ -407,9 +457,14 @@ class BleMeshManager(private val context: Context) {
      * Envoie une photo, un vocal, un fichier ou une vidéo.
      * D'abord par Wi-Fi Aware (voisins directs, sans limite de taille).
      * Sinon par Bluetooth, en fragments, pour les petits contenus seulement (250 Ko maximum).
-     * Sans [toPeerId] : envoi public. Avec [toPeerId] : contenu chiffré de bout en bout.
+     *
+     * Sans [toPeerId] : envoi public aux voisins présents.
+     * Avec [toPeerId] : fichier chiffré. Si le destinataire est à portée, il part vers lui, et « Parti »
+     * n'apparaît qu'une fois le fichier arrivé chez lui. Sinon il reste « En attente » et part à sa prochaine rencontre.
+     * Retourne un nombre supérieur à 0 si le fichier est envoyé ou gardé. Son identifiant est dans [lastSentId].
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
+        lastSentId = null
         val payload = if (toPeerId == null) {
             bytes
         } else {
@@ -431,14 +486,65 @@ class BleMeshManager(private val context: Context) {
             return 0
         }
         val targets = peers.values.toList()
-        if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
         val ttl = if (toPeerId == null) 1 else MeshPacket.DEFAULT_TTL
         val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
         // Trame : type (1) + TTL (1) + drapeau public/privé (1) + fragment (identifiant du contenu, numéro, total, données)
         val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT, ttl.toByte(), flag.toByte()) + it }
+
+        // Public : envoyé aux voisins présents
+        if (toPeerId == null) {
+            if (targets.isEmpty()) { emit("Aucun pair : fichier non envoyé"); return 0 }
+            emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
+            targets.forEach { enqueue(it, frames) }
+            return targets.size
+        }
+
+        // Privé : identifiant du fichier, pour suivre son statut dans la conversation
+        val target: String = toPeerId
+        val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }.toHex()
+        lastSentId = msgId
+        val destination = peers.entries.filter { peerIds[it.key] == target }.map { it.value }
+        val others = peers.entries.filter { peerIds[it.key] != target }.map { it.value }
+
+        if (destination.isEmpty()) {
+            // Destinataire absent : le fichier est gardé 24 h et part dès qu'il revient.
+            // Les voisins reçoivent aussi une copie, pour qu'elle voyage dans le réseau.
+            keepBlob(msgId, target, frames)
+            others.forEach { enqueue(it, frames) }
+            if (others.isEmpty()) emit("Aucun pair : fichier gardé en attente (24 h)")
+            else emit("Fichier confié à ${others.size} voisin(s), en attente du destinataire")
+            return 1
+        }
+
+        // Destinataire à portée : le fichier part vers lui. S'il échoue, il reste en attente.
+        val group = SendGroup(msgId, destination.size, onFinished = { ok -> if (!ok) keepBlob(msgId, target, frames) })
         emit("Envoi du fichier : ${bytes.size} octets en ${frames.size} fragments")
-        targets.forEach { enqueue(it, frames) }
-        return targets.size
+        destination.forEach { enqueue(it, frames, group) }
+        others.forEach { enqueue(it, frames) }
+        return destination.size + others.size
+    }
+
+    /** Garde un fichier privé pour un contact absent, et annonce « En attente » dans la conversation. */
+    private fun keepBlob(msgId: String, toPeerId: String, frames: List<ByteArray>) {
+        purgePendingBlobs()
+        if (pendingBlobs.size >= MAX_PENDING_BLOBS) pendingBlobs.removeAt(0)
+        pendingBlobs.add(PendingBlob(msgId, MeshStore.tagFor(toPeerId), frames, System.currentTimeMillis() + BLOB_KEEP_MS))
+        emit("En attente $msgId")
+    }
+
+    /** Retire les fichiers en attente dont la durée de conservation est dépassée. */
+    private fun purgePendingBlobs() {
+        val now = System.currentTimeMillis()
+        pendingBlobs.removeIf { it.expiresAt <= now }
+    }
+
+    /** Fichiers en attente pour ce contact. Ils seront envoyés maintenant qu'il est à portée. */
+    private fun storedBlobsFor(peerId: String): List<PendingBlob> {
+        purgePendingBlobs()
+        val tag = MeshStore.tagFor(peerId)
+        val found = pendingBlobs.filter { it.tag.contentEquals(tag) }
+        if (found.isNotEmpty()) emit("Envoi de ${found.size} fichier(s) gardé(s) à ${peerId.take(8)}")
+        return found
     }
 
     /** Marque comme lus les messages reçus de ce téléphone : il renvoie un accusé « Lu » pour chacun. */
@@ -523,6 +629,7 @@ class BleMeshManager(private val context: Context) {
                 if (ok) g.ok++
                 if (g.done == g.total) {
                     if (g.ok > 0) emit("Parti ${g.msgId}") else emit("Non envoyé ${g.msgId}")
+                    g.onFinished?.invoke(g.ok > 0)
                 }
             }
         } finally {
@@ -636,21 +743,32 @@ class BleMeshManager(private val context: Context) {
         override fun onScanResult(callbackType: Int, result: ScanResult?) {
             val r = result ?: return
             val mac = r.device.address
+            lastSeen[mac] = System.currentTimeMillis()
             peers.put(mac, r.device)
             val idBytes = r.scanRecord?.getManufacturerSpecificData(COMPANY_ID)
             if (idBytes != null && idBytes.size == MeshPacket.ID_SIZE) {
                 val id = idBytes.toHex()
+                // Nouveau dans la portée : jamais vu, ou absent depuis plus longtemps que le délai
                 if (peerIds.put(mac, id) == null) {
                     // Un même téléphone peut changer d'adresse Bluetooth : on retire les anciennes adresses
                     peerIds.filter { it.value == id && it.key != mac }.keys.toList().forEach {
                         peers.remove(it)
                         peerIds.remove(it)
+                        lastSeen.remove(it)
                     }
                     emit("Pair trouvé : ${(peerNames[id] ?: id).take(8)}")
                     publishPeers()
-                    // Premier contact : une seule connexion pour la clé, les messages gardés et les messages publics en attente
+                    // Première rencontre : une seule connexion pour la clé, les messages gardés et les messages publics en attente
                     val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
                     enqueue(r.device, frames)
+                    // Fichiers privés gardés pour ce contact : chacun part dans sa propre connexion
+                    storedBlobsFor(id).forEach { blob ->
+                        enqueue(
+                            r.device,
+                            blob.frames,
+                            SendGroup(blob.msgId, 1, onFinished = { ok -> if (ok) pendingBlobs.remove(blob) })
+                        )
+                    }
                 }
             }
         }
@@ -932,6 +1050,7 @@ class BleMeshManager(private val context: Context) {
 
     fun stop() {
         stopped = true
+        main.removeCallbacks(sweeper)
         bleExecutor.shutdownNow()
         try { if (scanning) adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (e: SecurityException) { Log.w(TAG, "Arrêt scan impossible", e) }
         try { if (advertising) adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback) } catch (e: SecurityException) { Log.w(TAG, "Arrêt annonce impossible", e) }
@@ -940,6 +1059,7 @@ class BleMeshManager(private val context: Context) {
         // Les clés et les noms des contacts ne sont PAS effacés : ils restent sauvegardés
         peers.clear()
         peerIds.clear()
+        lastSeen.clear()
         assemblies.clear()
         seenFragments.clear()
         pendingRead.clear()
@@ -957,6 +1077,12 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_NAME_CHARS = 20
         /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
         private const val MAX_BLE_BLOB = 250_000
+        /** Fichiers privés gardés pour les contacts absents : nombre maximal, et durée de conservation. */
+        private const val MAX_PENDING_BLOBS = 20
+        private const val BLOB_KEEP_MS = 24L * 60 * 60 * 1000
+        /** Un téléphone non vu depuis ce délai est considéré comme absent. Vérifié toutes les SWEEP_MS. */
+        private const val PEER_TIMEOUT_MS = 30_000L
+        private const val SWEEP_MS = 5_000L
         /** Nombre d'essais par connexion, et pause de base entre deux essais. */
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_PAUSE_MS = 1_500L
