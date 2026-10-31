@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
@@ -22,6 +23,7 @@ class MeshService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         // La mémoire de l'app reçoit les messages dès la création du service, écran fermé ou non
         MeshState.attach(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -39,13 +41,37 @@ class MeshService : Service() {
             startForeground(NOTIF_ID, notification)
         }
 
-        // Un seul gestionnaire et une seule découverte Wi-Fi : elles ne sont pas recréées si l'écran relance le service
+        // Un seul gestionnaire : il n'est pas recréé si l'écran relance le service.
+        // Les interrupteurs radio enregistrés (Bluetooth BLE, Wi-Fi Aware) sont respectés au démarrage.
         if (manager == null) {
-            val m = BleMeshManager(this).also { it.startGattServer(); it.startAdvertising() }
+            val m = BleMeshManager(this)
             manager = m
-            startWifiAware(m)
+            if (m.bleOn) {
+                m.startGattServer()
+                m.startAdvertising()
+            }
+            if (wifiAwareWanted()) startWifiAware(m)
         }
         return START_STICKY
+    }
+
+    /** Vrai si l'interrupteur Wi-Fi Aware est activé dans les réglages enregistrés. */
+    private fun wifiAwareWanted(): Boolean =
+        getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean(PREF_WIFI_AWARE, true)
+
+    /** Interrupteur Wi-Fi Aware, appelé depuis l'écran : coupe ou relance la découverte et les transferts. */
+    fun setWifiAwareEnabled(on: Boolean) {
+        val m = manager ?: return
+        if (on) {
+            if (wifi == null) startWifiAware(m)
+        } else {
+            BleMeshManager.wifiSender = null
+            transfer?.stop()
+            transfer = null
+            wifi?.stop()
+            wifi = null
+            MeshState.wifiPeers = 0
+        }
     }
 
     /** Wi-Fi Aware tourne ici : découverte, liens de données et transferts continuent écran fermé. */
@@ -80,6 +106,7 @@ class MeshService : Service() {
     }
 
     override fun onDestroy() {
+        instance = null
         BleMeshManager.wifiSender = null
         transfer?.stop()
         transfer = null
@@ -94,7 +121,11 @@ class MeshService : Service() {
 
     companion object {
         const val ACTION_START = "com.example.meshchat.START"
+        /** Préférence de l'interrupteur Wi-Fi Aware. Doit rester identique à celle de l'écran. */
+        const val PREF_WIFI_AWARE = "radio_wifi_aware"
         private const val CHANNEL_ID = "meshchat_service"
         private const val NOTIF_ID = 1
+        /** Le service en cours, pour que l'écran puisse agir sur les interrupteurs. Null si le service est arrêté. */
+        @Volatile var instance: MeshService? = null
     }
 }
