@@ -731,11 +731,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         log("Live : fin")
     }
 
-    // Scan d'un QR code : le contact est enregistré, puis le service redémarre pour le prendre en compte
+    // Scan d'un QR code : le contact est enregistré, puis le service redémarre pour le prendre en compte.
+    // L'orientation n'est pas verrouillée : sinon certains téléphones affichent la caméra à l'envers.
     val scanOptions = ScanOptions()
         .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
         .setPrompt("Visez le QR code de l'autre téléphone")
         .setBeepEnabled(false)
+        .setOrientationLocked(false)
     val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
         val text = result.contents
         if (text == null) {
