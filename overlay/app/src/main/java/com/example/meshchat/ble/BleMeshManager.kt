@@ -459,12 +459,15 @@ class BleMeshManager(private val context: Context) {
      * Sinon par Bluetooth, en fragments, pour les petits contenus seulement (250 Ko maximum).
      *
      * Sans [toPeerId] : envoi public aux voisins présents.
-     * Avec [toPeerId] : fichier chiffré. Si le destinataire est à portée, il part vers lui, et « Parti »
-     * n'apparaît qu'une fois le fichier arrivé chez lui. Sinon il reste « En attente » et part à sa prochaine rencontre.
+     * Avec [toPeerId] : fichier chiffré. Si le destinataire est à portée, il part vers lui. « Parti » apparaît
+     * quand il est arrivé, puis « Reçu » quand il l'a ouvert. Sinon il reste « En attente » et part à sa prochaine rencontre.
      * Retourne un nombre supérieur à 0 si le fichier est envoyé ou gardé. Son identifiant est dans [lastSentId].
      */
     fun sendBlob(bytes: ByteArray, toPeerId: String? = null): Int {
         lastSentId = null
+        // Identifiant du fichier : pour un envoi privé, il est glissé dans le contenu chiffré,
+        // pour que le destinataire puisse confirmer la réception.
+        val blobId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         val payload = if (toPeerId == null) {
             bytes
         } else {
@@ -472,9 +475,10 @@ class BleMeshManager(private val context: Context) {
                 emit("Clé de ce pair pas encore reçue : fichier non envoyé")
                 return 0
             }
-            CryptoEngine.encrypt(bytes, key)
+            CryptoEngine.encrypt(blobId + bytes, key)
         }
         val flag = if (toPeerId == null) FLAG_PUBLIC else FLAG_PRIVATE
+        if (toPeerId != null) lastSentId = blobId.toHex()
 
         // Wi-Fi Aware en premier
         val viaWifi = wifiSender?.invoke(flag, payload, toPeerId) ?: 0
@@ -499,10 +503,9 @@ class BleMeshManager(private val context: Context) {
             return targets.size
         }
 
-        // Privé : identifiant du fichier, pour suivre son statut dans la conversation
+        // Privé : suivi du statut dans la conversation
         val target: String = toPeerId
-        val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }.toHex()
-        lastSentId = msgId
+        val msgId = blobId.toHex()
         val destination = peers.entries.filter { peerIds[it.key] == target }.map { it.value }
         val others = peers.entries.filter { peerIds[it.key] != target }.map { it.value }
 
@@ -563,9 +566,21 @@ class BleMeshManager(private val context: Context) {
             FLAG_PUBLIC -> deliverBlob(payload, null)
             else -> {
                 val opened = openForMe(payload) ?: return
-                deliverBlob(opened.second, opened.first)
+                acceptPrivateBlob(opened.first, opened.second)
             }
         }
+    }
+
+    /**
+     * Fichier privé déchiffré, pour nous. Le contenu commence par l'identifiant du fichier :
+     * on remet le reste à l'écran, puis on confirme la réception à l'expéditeur.
+     */
+    private fun acceptPrivateBlob(sender: String, plain: ByteArray) {
+        if (plain.size <= MeshPacket.ID_SIZE) return
+        val blobId = plain.copyOfRange(0, MeshPacket.ID_SIZE)
+        val content = plain.copyOfRange(MeshPacket.ID_SIZE, plain.size)
+        deliverBlob(content, sender)
+        sendAck(sender, blobId, KIND_RECEIVED)
     }
 
     /** Remet un contenu complet à l'écran. [from] vaut null pour la conversation générale. */
@@ -1022,7 +1037,7 @@ class BleMeshManager(private val context: Context) {
 
         // Fichier privé : on n'affiche que s'il est pour nous (déchiffrement réussi)
         val opened = openForMe(bytes) ?: return
-        deliverBlob(opened.second, opened.first)
+        acceptPrivateBlob(opened.first, opened.second)
     }
 
     /** Transmet un fragment privé à tous les pairs, sauf celui qui vient de nous l'envoyer. */
