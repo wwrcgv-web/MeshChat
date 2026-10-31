@@ -64,6 +64,8 @@ import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
 import com.example.meshchat.wifi.WifiAwareSupport
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
@@ -237,7 +239,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             MeshHome(
                 onStart = { askPermissions() },
-                onStop = { stopMeshService() }
+                onStop = { stopMeshService() },
+                onRestart = { restartMeshService() }
             )
         }
     }
@@ -281,6 +284,12 @@ class MainActivity : ComponentActivity() {
     private fun stopMeshService() {
         stopService(Intent(this, MeshService::class.java))
         AppState.serviceOn = false
+    }
+
+    /** Arrête puis relance le service, pour qu'il relise les contacts sauvegardés (ex. après un scan de QR). */
+    private fun restartMeshService() {
+        stopMeshService()
+        Handler(Looper.getMainLooper()).postDelayed({ startMeshService() }, 1000L)
     }
 }
 
@@ -514,13 +523,14 @@ private fun ChatChip(label: String, selected: Boolean, online: Boolean, green: C
 }
 
 @Composable
-private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
+private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> Unit) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
+    var showMyQr by remember { mutableStateOf(false) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
     var liveHolding by remember { mutableStateOf(false) }
@@ -721,6 +731,39 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
         log("Live : fin")
     }
 
+    // Scan d'un QR code : le contact est enregistré, puis le service redémarre pour le prendre en compte
+    val scanOptions = ScanOptions()
+        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+        .setPrompt("Visez le QR code de l'autre téléphone")
+        .setBeepEnabled(false)
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        val text = result.contents
+        if (text == null) {
+            log("Scan annulé")
+        } else {
+            val added = QrShare.addContact(context, text)
+            if (added != null) {
+                log("Contact ajouté : $added. Redémarrage du service…")
+                MeshState.refresh()
+                onRestart()
+            } else {
+                log("QR code non reconnu")
+            }
+        }
+    }
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) scanLauncher.launch(scanOptions) else log("Caméra refusée dans les réglages du téléphone")
+    }
+
+    /** Ouvre la caméra pour scanner un QR code, après avoir demandé la permission si besoin. */
+    fun startScan() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            scanLauncher.launch(scanOptions)
+        } else {
+            cameraPermission.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     // Premier lancement : le nom est demandé, et il est obligatoire
     if (myName.isBlank()) {
         AlertDialog(
@@ -742,6 +785,30 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                 TextButton(onClick = { saveName(nameInput) }, enabled = nameInput.isNotBlank()) {
                     Text("Continuer")
                 }
+            }
+        )
+    }
+
+    // Mon QR code : l'autre personne le scanne pour t'ajouter
+    if (showMyQr) {
+        AlertDialog(
+            onDismissRequest = { showMyQr = false },
+            title = { Text("Mon QR code") },
+            text = {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                    val content = QrShare.myContent(context)
+                    if (content != null) {
+                        val qr = remember(content) { QrShare.bitmap(content) }
+                        Image(bitmap = qr.asImageBitmap(), contentDescription = "Mon QR code", modifier = Modifier.size(240.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text("L'autre personne le scanne pour t'ajouter.", fontSize = 12.sp, color = grey)
+                    } else {
+                        Text("Le QR code sera disponible après le premier démarrage du service.", fontSize = 13.sp)
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showMyQr = false }) { Text("Fermer") }
             }
         )
     }
@@ -896,6 +963,31 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit) {
                                 prefs.edit().putBoolean("live_on", on).apply()
                             },
                             colors = SwitchDefaults.colors(checkedTrackColor = green)
+                        )
+
+                        // Contacts par QR code : afficher le sien, ou scanner celui d'une autre personne
+                        Spacer(Modifier.height(16.dp))
+                        Text("CONTACTS PAR QR CODE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { showSettings = false; showMyQr = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = green)
+                        ) {
+                            Text("Mon QR code", color = Color.White, fontSize = 14.sp)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { showSettings = false; startScan() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = green)
+                        ) {
+                            Text("Scanner un QR code", color = Color.White, fontSize = 14.sp)
+                        }
+                        Text(
+                            "Scanne le QR de quelqu'un pour l'ajouter, même s'il est loin.",
+                            color = grey,
+                            fontSize = 12.sp
                         )
 
                         // Partage de l'application, par le menu Android (Bluetooth, Nearby Share, etc.)
