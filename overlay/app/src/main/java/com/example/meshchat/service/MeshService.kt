@@ -5,12 +5,18 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.example.meshchat.MeshState
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.wifi.WifiAwareDiscovery
@@ -28,6 +34,7 @@ class MeshService : Service() {
     @Volatile private var direct: WifiDirectTransfer? = null
 
     private val prefs: SharedPreferences by lazy { getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
+    private val main = Handler(Looper.getMainLooper())
 
     /**
      * Suit l'interrupteur Wi-Fi Direct de l'écran : il est branché tout de suite, sans relancer le service.
@@ -35,6 +42,20 @@ class MeshService : Service() {
      */
     private val prefListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == PREF_WIFI_DIRECT) setWifiDirectEnabled(prefs.getBoolean(PREF_WIFI_DIRECT, false))
+    }
+
+    /**
+     * Suit l'interrupteur Bluetooth du téléphone. Quand on l'éteint, Android coupe l'annonce, la recherche
+     * et le serveur sans prévenir l'application. Au retour du Bluetooth, tout est relancé.
+     */
+    private val bluetoothWatcher = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
+                BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> onBluetoothOff()
+                BluetoothAdapter.STATE_ON -> onBluetoothOn()
+            }
+        }
     }
 
     override fun onCreate() {
@@ -47,6 +68,12 @@ class MeshService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
         prefs.registerOnSharedPreferenceChangeListener(prefListener)
+        ContextCompat.registerReceiver(
+            this,
+            bluetoothWatcher,
+            IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -71,6 +98,36 @@ class MeshService : Service() {
             if (wifiDirectWanted()) startWifiDirect(m)
         }
         return START_STICKY
+    }
+
+    /** Le Bluetooth du téléphone vient de s'éteindre : on met la radio BLE en pause, sans rien oublier. */
+    private fun onBluetoothOff() {
+        val m = manager ?: return
+        try {
+            m.emit("Bluetooth du téléphone éteint")
+            m.setBleEnabled(false)
+        } catch (e: Exception) {
+            // Android a déjà coupé la radio : rien de plus à faire
+        }
+    }
+
+    /** Le Bluetooth du téléphone est de nouveau allumé : on relance annonce, recherche et serveur. */
+    private fun onBluetoothOn() {
+        val m = manager ?: return
+        m.emit("Bluetooth du téléphone allumé")
+        // Laisse au Bluetooth le temps de finir de démarrer
+        main.postDelayed({
+            if (manager !== m) return@postDelayed
+            // Respecte l'interrupteur « Bluetooth BLE » de l'écran : s'il est coupé, on ne relance rien
+            if (!prefs.getBoolean(BleMeshManager.PREF_BLE, true)) return@postDelayed
+            try {
+                // Éteint puis rallume : remet à zéro ce qu'Android a coupé pendant l'arrêt
+                m.setBleEnabled(false)
+                m.setBleEnabled(true)
+            } catch (e: Exception) {
+                m.emit("Relance Bluetooth impossible : ${e.message}")
+            }
+        }, BLUETOOTH_SETTLE_MS)
     }
 
     private fun wifiAwareWanted(): Boolean = prefs.getBoolean(PREF_WIFI_AWARE, true)
@@ -167,6 +224,8 @@ class MeshService : Service() {
 
     override fun onDestroy() {
         instance = null
+        main.removeCallbacksAndMessages(null)
+        try { unregisterReceiver(bluetoothWatcher) } catch (e: Exception) { }
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         BleMeshManager.wifiSender = null
         val wd = direct
@@ -189,6 +248,8 @@ class MeshService : Service() {
         const val PREF_WIFI_AWARE = "radio_wifi_aware"
         /** Préférence de l'interrupteur Wi-Fi Direct. Doit rester identique à celle de l'écran. */
         const val PREF_WIFI_DIRECT = "radio_wifi_direct"
+        /** Délai après le rallumage du Bluetooth, avant de relancer la radio BLE. */
+        private const val BLUETOOTH_SETTLE_MS = 1_500L
         private const val CHANNEL_ID = "meshchat_service"
         private const val NOTIF_ID = 1
         /** Le service en cours, pour que l'écran puisse agir sur les interrupteurs. Null si le service est arrêté. */
