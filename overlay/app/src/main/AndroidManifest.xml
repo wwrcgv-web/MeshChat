@@ -1,578 +1,92 @@
+
+<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-    <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
-    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
-    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" android:usesPermissionFlags="neverForLocation" />
+
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.wifi.aware"
+        android:required="false" />
+
+    <uses-feature
+        android:name="android.hardware.wifi.direct"
+        android:required="false" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_ADMIN"
+        android:maxSdkVersion="30" />
+
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <uses-permission
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
-    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    <uses-feature android:name="android.hardware.wifi.aware" android:required="false" />
-    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
-    <application android:label="Samchat" android:icon="@mipmap/ic_launcher" android:theme="@style/Theme.MeshChat" android:allowBackup="false" android:supportsRtl="true">
-        <activity android:name=".MainActivity" android:exported="true">
-            <intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter>
+
+    <application
+        android:label="Samchat"
+        android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.MeshChat"
+        android:allowBackup="false"
+        android:supportsRtl="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
         </activity>
-        <!-- Écran de scan du QR code : forcé en portrait pour que la caméra ne soit plus à l'envers -->
+
         <activity
             android:name="com.journeyapps.barcodescanner.CaptureActivity"
             android:screenOrientation="portrait"
             tools:replace="android:screenOrientation" />
-        <service android:name=".service.MeshService" android:foregroundServiceType="connectedDevice" android:exported="false" />
+
+        <service
+            android:name=".service.MeshService"
+            android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true">
-            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+
         </provider>
+
     </application>
-</manifest>package com.example.meshchat.wifi
 
-import android.Manifest
-import android.annotation.SuppressLint
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
-import android.content.pm.PackageManager
-import android.net.wifi.WpsInfo
-import android.net.wifi.p2p.WifiP2pConfig
-import android.net.wifi.p2p.WifiP2pInfo
-import android.net.wifi.p2p.WifiP2pManager
-import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
-import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceRequest
-import android.os.Build
-import android.os.Handler
-import android.os.Looper
-import androidx.core.content.ContextCompat
-import java.io.DataInputStream
-import java.io.DataOutputStream
-import java.io.IOException
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.Executors
-
-/**
- * Transfert par Wi-Fi Direct. Chaque téléphone se fait connaître par un service « _samchat._tcp »
- * (son identifiant Samchat), ce qui permet de savoir quel appareil Wi-Fi Direct est quel contact.
- *
- * Un lien est ouvert à la demande, quand un gros fichier privé doit partir. L'autre téléphone doit
- * accepter l'invitation Android. Le lien reste ouvert un moment, puis le groupe est fermé.
- *
- * Trame sur le lien : drapeau (1 octet) + taille (4 octets) + contenu. Le drapeau est celui de BleMeshManager,
- * transmis tel quel (le morceau de voix en direct est le drapeau 2).
- */
-@SuppressLint("MissingPermission")
-@Suppress("DEPRECATION")
-class WifiDirectTransfer(
-    private val context: Context,
-    private val myId: String,
-    private val log: (String) -> Unit
-) {
-    /** Un voisin vu en Wi-Fi Direct : adresse de son appareil, et quand on l'a vu. */
-    private class Seen(val address: String, val at: Long)
-
-    /** Un envoi en attente d'un lien. */
-    private class Job(
-        val flag: Int,
-        val payload: ByteArray,
-        val peerId: String,
-        val tries: Int = 0,
-        val createdAt: Long = System.currentTimeMillis()
-    )
-
-    /** Un lien ouvert avec un contact. */
-    private class Link(
-        val peerId: String,
-        val socket: Socket,
-        val input: DataInputStream,
-        val output: DataOutputStream
-    ) {
-        @Volatile var lastActivity = System.currentTimeMillis()
-    }
-
-    private val main = Handler(Looper.getMainLooper())
-    private val io = Executors.newCachedThreadPool()
-    private val writer = Executors.newSingleThreadExecutor()
-
-    private var manager: WifiP2pManager? = null
-    private var channel: WifiP2pManager.Channel? = null
-    private var deliver: ((Int, ByteArray) -> Unit)? = null
-    @Volatile private var running = false
-    private var receiverRegistered = false
-
-    private val seen = ConcurrentHashMap<String, Seen>()
-    private val outbox = CopyOnWriteArrayList<Job>()
-    private val links = ConcurrentHashMap<String, Link>()
-    @Volatile private var server: ServerSocket? = null
-
-    @Volatile private var connectingTo: String? = null
-    @Volatile private var connectStartedAt = 0L
-    @Volatile private var groupFormed = false
-    @Volatile private var groupFormedAt = 0L
-    private var lastDiscovery = 0L
-
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(ctx: Context?, intent: Intent?) {
-            val i = intent ?: return
-            when (i.action) {
-                WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                    val state = i.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1)
-                    if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) log("Wi-Fi Direct : Wi-Fi éteint ou indisponible")
-                }
-                WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> checkConnection()
-            }
-        }
-    }
-
-    private val tick = object : Runnable {
-        override fun run() {
-            if (!running) return
-            try { housekeeping() } catch (e: Exception) { log("Wi-Fi Direct : erreur interne (${e.message})") }
-            main.postDelayed(this, TICK_MS)
-        }
-    }
-
-    /** Démarre le service. [onReceive] reçoit (drapeau, contenu) de chaque trame reçue. Retourne false si impossible. */
-    fun start(onReceive: (Int, ByteArray) -> Unit): Boolean {
-        if (running) return true
-        val m = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
-        if (m == null) {
-            log("Wi-Fi Direct : non supporté par ce téléphone")
-            return false
-        }
-        if (!hasPermission()) {
-            log("Wi-Fi Direct : autorisation manquante (Appareils à proximité, ou Localisation sur Android 12 et moins)")
-            return false
-        }
-        val ch: WifiP2pManager.Channel? = m.initialize(context, Looper.getMainLooper(), null)
-        if (ch == null) {
-            log("Wi-Fi Direct : initialisation impossible")
-            return false
-        }
-        manager = m
-        channel = ch
-        deliver = onReceive
-        val filter = IntentFilter().apply {
-            addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
-            addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-        }
-        ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
-        receiverRegistered = true
-        running = true
-        registerService()
-        startDiscovery()
-        main.postDelayed(tick, TICK_MS)
-        log("Wi-Fi Direct : activé")
-        return true
-    }
-
-    /** Arrête tout : découverte, liens, groupe. */
-    fun stop() {
-        if (!running) return
-        running = false
-        main.removeCallbacks(tick)
-        val m = manager
-        val ch = channel
-        if (m != null && ch != null) {
-            try { m.clearServiceRequests(ch, null) } catch (e: Exception) { }
-            try { m.clearLocalServices(ch, null) } catch (e: Exception) { }
-            try { m.stopPeerDiscovery(ch, null) } catch (e: Exception) { }
-            try { m.cancelConnect(ch, null) } catch (e: Exception) { }
-            try { m.removeGroup(ch, null) } catch (e: Exception) { }
-        }
-        closeAll()
-        groupFormed = false
-        connectingTo = null
-        outbox.clear()
-        seen.clear()
-        if (receiverRegistered) {
-            try { context.unregisterReceiver(receiver) } catch (e: Exception) { }
-            receiverRegistered = false
-        }
-        if (Build.VERSION.SDK_INT >= 27) {
-            try { ch?.close() } catch (e: Exception) { }
-        }
-        manager = null
-        channel = null
-        io.shutdownNow()
-        writer.shutdownNow()
-        log("Wi-Fi Direct : arrêté")
-    }
-
-    /**
-     * Envoie un contenu à un contact. Retourne 1 si Wi-Fi Direct s'en charge, 0 sinon (le Bluetooth prend le relais).
-     * Un lien déjà ouvert sert pour tout. Sans lien, seuls les gros fichiers privés d'un contact vu en Wi-Fi Direct partent ici.
-     */
-    fun sendBlob(flag: Int, payload: ByteArray, toPeerId: String?): Int {
-        if (!running || toPeerId == null) return 0
-        if (links[toPeerId] != null) {
-            write(Job(flag, payload, toPeerId))
-            return 1
-        }
-        // Le live a besoin d'un lien déjà prêt : l'ouvrir prend trop de temps
-        if (flag == LIVE_FLAG) return 0
-        val near = seen[toPeerId] ?: return 0
-        if (System.currentTimeMillis() - near.at > SEEN_MS) return 0
-        if (payload.size < MIN_DIRECT_BYTES) return 0
-        outbox.add(Job(flag, payload, toPeerId))
-        log("Wi-Fi Direct : envoi de ${payload.size / 1024} Ko, connexion en cours")
-        main.post { connectIfIdle() }
-        return 1
-    }
-
-    private fun hasPermission(): Boolean {
-        val permission = if (Build.VERSION.SDK_INT >= 33) {
-            Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            Manifest.permission.ACCESS_FINE_LOCATION
-        }
-        return ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
-    }
-
-    private fun listener(onOk: () -> Unit = {}, onFail: (Int) -> Unit = {}): WifiP2pManager.ActionListener =
-        object : WifiP2pManager.ActionListener {
-            override fun onSuccess() = onOk()
-            override fun onFailure(reason: Int) = onFail(reason)
-        }
-
-    // ---------- Découverte : qui est autour de moi en Wi-Fi Direct ----------
-
-    /** Annonce mon identifiant Samchat comme service Wi-Fi Direct. */
-    private fun registerService() {
-        val m = manager ?: return
-        val ch = channel ?: return
-        val info = WifiP2pDnsSdServiceInfo.newInstance(myId, SERVICE_TYPE, mapOf("id" to myId))
-        val add = { m.addLocalService(ch, info, listener()) }
-        m.clearLocalServices(ch, listener(onOk = { add() }, onFail = { add() }))
-        m.setDnsSdResponseListeners(
-            ch,
-            { instanceName, registrationType, device ->
-                if (registrationType.contains("_samchat") && ID_REGEX.matches(instanceName) && instanceName != myId) {
-                    val isNew = seen.put(instanceName, Seen(device.deviceAddress, System.currentTimeMillis())) == null
-                    if (isNew) log("Wi-Fi Direct : voisin vu ${instanceName.take(8)}")
-                }
-            },
-            { _, _, _ -> }
-        )
-    }
-
-    /** Lance une recherche de voisins, puis de leurs services Samchat. */
-    private fun startDiscovery() {
-        val m = manager ?: return
-        val ch = channel ?: return
-        lastDiscovery = System.currentTimeMillis()
-        val services = {
-            m.clearServiceRequests(ch, listener(
-                onOk = { addServiceRequest() },
-                onFail = { addServiceRequest() }
-            ))
-        }
-        m.discoverPeers(ch, listener(onOk = { services() }, onFail = { services() }))
-    }
-
-    private fun addServiceRequest() {
-        val m = manager ?: return
-        val ch = channel ?: return
-        m.addServiceRequest(ch, WifiP2pDnsSdServiceRequest.newInstance(), listener(
-            onOk = { m.discoverServices(ch, listener()) }
-        ))
-    }
-
-    // ---------- Connexion ----------
-
-    /** Ouvre une connexion vers le contact du premier envoi en attente, si rien n'est en cours. */
-    private fun connectIfIdle() {
-        if (running && connectingTo == null && !groupFormed && links.isEmpty() && outbox.isNotEmpty()) {
-            startNextConnect()
-        }
-    }
-
-    private fun startNextConnect() {
-        val m = manager ?: return
-        val ch = channel ?: return
-        val job = outbox.firstOrNull { seen[it.peerId] != null } ?: return
-        val address = seen[job.peerId]?.address ?: return
-        val peer = job.peerId
-        connectingTo = peer
-        connectStartedAt = System.currentTimeMillis()
-        val config = WifiP2pConfig().apply {
-            deviceAddress = address
-            wps.setup = WpsInfo.PBC
-        }
-        val connect = {
-            m.connect(ch, config, listener(
-                onOk = { log("Wi-Fi Direct : invitation envoyée à ${peer.take(8)}, à accepter sur l'autre téléphone") },
-                onFail = { reason ->
-                    log("Wi-Fi Direct : connexion impossible (code $reason)")
-                    connectingTo = null
-                    failJobs(peer)
-                }
-            ))
-        }
-        // La recherche en cours bloque la connexion : on l'arrête d'abord
-        m.stopPeerDiscovery(ch, listener(onOk = { connect() }, onFail = { connect() }))
-    }
-
-    private fun checkConnection() {
-        val m = manager ?: return
-        val ch = channel ?: return
-        try {
-            m.requestConnectionInfo(ch) { info -> onConnectionInfo(info) }
-        } catch (e: SecurityException) {
-            log("Wi-Fi Direct : autorisation refusée")
-        }
-    }
-
-    /** Le groupe Wi-Fi Direct a changé. Selon mon rôle, j'attends l'autre téléphone ou je le rejoins. */
-    private fun onConnectionInfo(info: WifiP2pInfo?) {
-        if (info == null || !info.groupFormed) {
-            if (groupFormed) {
-                groupFormed = false
-                closeAll()
-                log("Wi-Fi Direct : groupe fermé")
-            }
-            return
-        }
-        if (groupFormed) return
-        groupFormed = true
-        groupFormedAt = System.currentTimeMillis()
-        if (info.isGroupOwner) {
-            log("Wi-Fi Direct : groupe formé, en attente de l'autre téléphone")
-            startServer()
-        } else {
-            val host = info.groupOwnerAddress?.hostAddress
-            log("Wi-Fi Direct : groupe formé")
-            if (host != null) connectToOwner(host)
-        }
-    }
-
-    /** Je suis le chef du groupe : j'écoute les téléphones qui se connectent. */
-    private fun startServer() {
-        try { server?.close() } catch (e: Exception) { }
-        io.execute {
-            try {
-                val s = ServerSocket()
-                s.reuseAddress = true
-                s.bind(InetSocketAddress(PORT))
-                server = s
-                while (running && !s.isClosed) {
-                    val socket = s.accept()
-                    io.execute { handshake(socket) }
-                }
-            } catch (e: Exception) {
-                if (running && server?.isClosed == false) log("Wi-Fi Direct : serveur arrêté (${e.message})")
-            }
-        }
-    }
-
-    /** Je suis un membre du groupe : je me connecte à son chef, avec quelques essais le temps qu'il soit prêt. */
-    private fun connectToOwner(host: String) {
-        io.execute {
-            for (attempt in 1..CONNECT_ATTEMPTS) {
-                if (!running || !groupFormed) return@execute
-                try {
-                    val socket = Socket()
-                    socket.connect(InetSocketAddress(host, PORT), 4000)
-                    handshake(socket)
-                    return@execute
-                } catch (e: Exception) {
-                    try { Thread.sleep(1000) } catch (ie: InterruptedException) { return@execute }
-                }
-            }
-            log("Wi-Fi Direct : l'autre téléphone ne répond pas")
-        }
-    }
-
-    // ---------- Lien ouvert ----------
-
-    /** Les deux téléphones se présentent (identifiant Samchat), puis le lien reste en lecture jusqu'à sa fermeture. */
-    private fun handshake(socket: Socket) {
-        var link: Link? = null
-        try {
-            socket.tcpNoDelay = true
-            val input = DataInputStream(socket.getInputStream().buffered())
-            val output = DataOutputStream(socket.getOutputStream().buffered())
-            output.write(myId.toByteArray(Charsets.US_ASCII))
-            output.flush()
-            val hello = ByteArray(ID_LEN)
-            input.readFully(hello)
-            val peerId = String(hello, Charsets.US_ASCII)
-            if (!ID_REGEX.matches(peerId)) {
-                socket.close()
-                return
-            }
-            val l = Link(peerId, socket, input, output)
-            link = l
-            links.put(peerId, l)?.let { closeQuietly(it.socket) }
-            connectingTo = null
-            log("Wi-Fi Direct : lien prêt avec ${peerId.take(8)}")
-            flushOutbox(peerId)
-            readLoop(l)
-        } catch (e: Exception) {
-            // Lien coupé : rien à faire de plus
-        } finally {
-            link?.let { if (links[it.peerId] === it) links.remove(it.peerId) }
-            closeQuietly(socket)
-        }
-    }
-
-    private fun readLoop(link: Link) {
-        while (running) {
-            val flag = link.input.readUnsignedByte()
-            val size = link.input.readInt()
-            if (size < 0 || size > MAX_FRAME) throw IOException("trame trop grande")
-            val data = ByteArray(size)
-            link.input.readFully(data)
-            link.lastActivity = System.currentTimeMillis()
-            try {
-                deliver?.invoke(flag, data)
-            } catch (e: Exception) {
-                log("Wi-Fi Direct : contenu reçu illisible (${e.message})")
-            }
-        }
-    }
-
-    /** Envoie à ce contact tout ce qui l'attendait. */
-    private fun flushOutbox(peerId: String) {
-        val jobs = outbox.filter { it.peerId == peerId }
-        if (jobs.isEmpty()) return
-        outbox.removeAll(jobs.toSet())
-        jobs.forEach { write(it) }
-    }
-
-    /** Écrit une trame sur le lien, dans l'ordre, sans bloquer l'appelant. */
-    private fun write(job: Job) {
-        val link = links[job.peerId]
-        if (link == null) {
-            requeue(job)
-            return
-        }
-        try {
-            writer.execute {
-                try {
-                    link.output.writeByte(job.flag)
-                    link.output.writeInt(job.payload.size)
-                    link.output.write(job.payload)
-                    link.output.flush()
-                    link.lastActivity = System.currentTimeMillis()
-                    if (job.flag != LIVE_FLAG) log("Wi-Fi Direct : fichier envoyé (${job.payload.size / 1024} Ko)")
-                } catch (e: Exception) {
-                    closeQuietly(link.socket)
-                    links.remove(job.peerId, link)
-                    if (job.flag != LIVE_FLAG) requeue(job)
-                }
-            }
-        } catch (e: Exception) {
-            // Service arrêté pendant l'envoi
-        }
-    }
-
-    // ---------- Entretien ----------
-
-    private fun housekeeping() {
-        val now = System.currentTimeMillis()
-        seen.entries.removeIf { now - it.value.at > SEEN_MS }
-
-        val old = outbox.filter { now - it.createdAt > JOB_TTL_MS }
-        if (old.isNotEmpty()) {
-            outbox.removeAll(old.toSet())
-            log("Wi-Fi Direct : ${old.size} envoi(s) abandonné(s), contact introuvable")
-        }
-
-        // Invitation jamais acceptée, ou lien jamais ouvert
-        if (connectingTo != null && now - connectStartedAt > CONNECT_TIMEOUT_MS) {
-            val peer = connectingTo
-            log("Wi-Fi Direct : invitation non acceptée")
-            connectingTo = null
-            try { manager?.cancelConnect(channel, null) } catch (e: Exception) { }
-            dropGroup("connexion abandonnée")
-            if (peer != null) failJobs(peer)
-        }
-
-        // Groupe formé mais aucun lien ouvert depuis trop longtemps
-        if (groupFormed && links.isEmpty() && connectingTo == null && now - groupFormedAt > STUCK_MS) {
-            dropGroup("aucun lien")
-        }
-
-        // Lien inutilisé : on ferme le groupe
-        if (links.isNotEmpty() && outbox.isEmpty() && links.values.all { now - it.lastActivity > IDLE_MS }) {
-            dropGroup("inactif")
-        }
-
-        connectIfIdle()
-
-        // La recherche ne tourne que si aucun groupe n'est ouvert
-        if (!groupFormed && connectingTo == null && now - lastDiscovery > DISCOVERY_MS) startDiscovery()
-    }
-
-    /** Ferme les liens et le groupe Wi-Fi Direct. */
-    private fun dropGroup(reason: String) {
-        closeAll()
-        groupFormed = false
-        connectingTo = null
-        try { manager?.removeGroup(channel, null) } catch (e: Exception) { }
-        log("Wi-Fi Direct : groupe fermé ($reason)")
-    }
-
-    private fun closeAll() {
-        links.values.forEach { closeQuietly(it.socket) }
-        links.clear()
-        try { server?.close() } catch (e: Exception) { }
-        server = null
-    }
-
-    /** Une connexion a échoué : les envois de ce contact repartent en file, ou sont abandonnés après trois essais. */
-    private fun failJobs(peerId: String) {
-        val jobs = outbox.filter { it.peerId == peerId }
-        if (jobs.isEmpty()) return
-        outbox.removeAll(jobs.toSet())
-        jobs.forEach { requeue(it) }
-    }
-
-    private fun requeue(job: Job) {
-        if (job.tries + 1 >= MAX_TRIES) {
-            log("Wi-Fi Direct : envoi abandonné, renvoyez le fichier")
-            return
-        }
-        outbox.add(Job(job.flag, job.payload, job.peerId, job.tries + 1, job.createdAt))
-    }
-
-    private fun closeQuietly(socket: Socket) {
-        try { socket.close() } catch (e: Exception) { }
-    }
-
-    companion object {
-        /** Taille minimale d'un fichier pour ouvrir un lien Wi-Fi Direct. Mettre 1 pour tout envoyer par Wi-Fi Direct (test). */
-        private const val MIN_DIRECT_BYTES = 30_000
-        /** Doit rester identique à FLAG_LIVE dans BleMeshManager. */
-        private const val LIVE_FLAG = 2
-        private const val SERVICE_TYPE = "_samchat._tcp"
-        private const val PORT = 47911
-        private const val ID_LEN = 16
-        private val ID_REGEX = Regex("[0-9a-f]{16}")
-        private const val MAX_FRAME = 48 * 1024 * 1024
-        private const val MAX_TRIES = 3
-        private const val CONNECT_ATTEMPTS = 8
-        private const val TICK_MS = 2_000L
-        private const val DISCOVERY_MS = 40_000L
-        private const val SEEN_MS = 120_000L
-        private const val CONNECT_TIMEOUT_MS = 60_000L
-        private const val STUCK_MS = 30_000L
-        private const val IDLE_MS = 45_000L
-        private const val JOB_TTL_MS = 180_000L
-    }
-}
+</manifest>
