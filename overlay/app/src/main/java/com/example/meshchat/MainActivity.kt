@@ -1,6 +1,7 @@
 package com.example.meshchat
 
 import android.Manifest
+import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -430,6 +431,33 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     }
 }
 
+/** Une ligne avec un interrupteur, pour la section RADIOS du panneau de debug. */
+@Composable
+private fun RadioRow(
+    title: String,
+    note: String,
+    checked: Boolean,
+    enabled: Boolean,
+    color: Color,
+    onChange: (Boolean) -> Unit
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(note, fontSize = 11.sp, color = Color(0xFF9CA3AF))
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(checkedTrackColor = color)
+        )
+    }
+}
+
 /**
  * Bouton micro. Appui bref : vocal classique (démarrer, puis arrêter et envoyer).
  * Avec le live activé : appui maintenu = parler en direct, le relâcher arrête.
@@ -543,6 +571,16 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
     val dist = remember { readDistribution(context) }
+
+    // Interrupteurs radio : état gardé entre les lancements
+    var radioBle by remember { mutableStateOf(prefs.getBoolean("radio_ble", true)) }
+    var radioWifiAware by remember { mutableStateOf(prefs.getBoolean("radio_wifi_aware", true)) }
+    var radioWifiDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
+    var radioLongRange by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
+    val wifiAwareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
+    val longRangeSupported = remember {
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
+    }
 
     // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
@@ -829,7 +867,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Panneau Debug : compteurs des événements, et distribution de cette copie
+    // Panneau Debug : compteurs, interrupteurs radio, et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -856,6 +894,59 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     Text("Relais : ${c("relay")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Sans pair : ${c("no_peer")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Échecs : ${c("fail")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+
+                    Spacer(Modifier.height(14.dp))
+                    Text("RADIOS", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    RadioRow(
+                        title = "Bluetooth BLE",
+                        note = "Annonce, recherche et messages par Bluetooth. Coupé : les contacts et les clés restent.",
+                        checked = radioBle,
+                        enabled = true,
+                        color = green,
+                        onChange = { on ->
+                            radioBle = on
+                            prefs.edit().putBoolean("radio_ble", on).apply()
+                            BleMeshManager.instance?.setBleEnabled(on)
+                        }
+                    )
+                    RadioRow(
+                        title = "Wi-Fi Aware",
+                        note = if (wifiAwareSupported) "Gros fichiers entre voisins directs." else "Non supporté par ce téléphone.",
+                        checked = radioWifiAware,
+                        enabled = wifiAwareSupported,
+                        color = green,
+                        onChange = { on ->
+                            radioWifiAware = on
+                            prefs.edit().putBoolean("radio_wifi_aware", on).apply()
+                            MeshService.instance?.setWifiAwareEnabled(on)
+                        }
+                    )
+                    RadioRow(
+                        title = "Wi-Fi Direct",
+                        note = "Interrupteur prêt. Le transfert ne l'utilise pas encore.",
+                        checked = radioWifiDirect,
+                        enabled = true,
+                        color = green,
+                        onChange = { on ->
+                            radioWifiDirect = on
+                            prefs.edit().putBoolean("radio_wifi_direct", on).apply()
+                        }
+                    )
+                    RadioRow(
+                        title = "Bluetooth LE Long Range",
+                        note = if (longRangeSupported) {
+                            "Plus loin, mais plus lent. Actif seulement si l'autre téléphone le supporte aussi."
+                        } else {
+                            "Non supporté par ce téléphone."
+                        },
+                        checked = radioLongRange,
+                        enabled = longRangeSupported,
+                        color = green,
+                        onChange = { on ->
+                            radioLongRange = on
+                            prefs.edit().putBoolean("radio_long_range", on).apply()
+                        }
+                    )
 
                     Spacer(Modifier.height(14.dp))
                     Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
