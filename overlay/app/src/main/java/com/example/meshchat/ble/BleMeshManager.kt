@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.example.meshchat.RelayConfig
 import com.example.meshchat.crypto.CryptoEngine
 import java.security.KeyFactory
 import java.security.KeyPair
@@ -400,7 +401,7 @@ class BleMeshManager(private val context: Context) {
                 emit("Message trop long (200 caractères maximum)")
                 return 0
             }
-            val packet = MeshPacket(UUID.randomUUID(), myId, ByteArray(MeshPacket.ID_SIZE), RELAY_TTL, text)
+            val packet = MeshPacket(UUID.randomUUID(), myId, ByteArray(MeshPacket.ID_SIZE), RelayConfig.maxRelays(context), text)
             seenIds.add(packet.id)
             val targets = peers.values.toList()
             if (targets.isEmpty()) {
@@ -435,7 +436,7 @@ class BleMeshManager(private val context: Context) {
             return 1
         }
         // Trame : type (1) + TTL (1) + identifiant (8) + étiquette (8) + données chiffrées
-        val frame = byteArrayOf(TYPE_SECRET, RELAY_TTL.toByte()) + msgId + tag + cipher
+        val frame = byteArrayOf(TYPE_SECRET, RelayConfig.maxRelays(context).toByte()) + msgId + tag + cipher
         val group = SendGroup(msgId.toHex(), targets.size)
         targets.forEach { enqueue(it, listOf(frame), group) }
         return targets.size
@@ -532,7 +533,7 @@ class BleMeshManager(private val context: Context) {
             return 0
         }
         val targets = peers.values.toList()
-        val ttl = if (toPeerId == null) 1 else RELAY_TTL
+        val ttl = if (toPeerId == null) 1 else RelayConfig.maxRelays(context)
         val fragments = MeshChunker.split(MeshChunker.newContentId(), payload)
         // Trame : type (1) + TTL (1) + drapeau public/privé (1) + fragment (identifiant du contenu, numéro, total, données)
         val frames = fragments.map { byteArrayOf(TYPE_FRAGMENT, ttl.toByte(), flag.toByte()) + it }
@@ -552,11 +553,11 @@ class BleMeshManager(private val context: Context) {
         val others = peers.entries.filter { peerIds[it.key] != target }.map { it.value }
 
         if (destination.isEmpty()) {
-            // Destinataire absent : le fichier est gardé 24 h et part dès qu'il revient.
+            // Destinataire absent : le fichier est gardé le temps réglé dans les paramètres et part dès qu'il revient.
             // Les voisins reçoivent aussi une copie, pour qu'elle voyage dans le réseau.
             keepBlob(msgId, target, frames)
             others.forEach { enqueue(it, frames) }
-            if (others.isEmpty()) emit("Aucun pair : fichier gardé en attente (24 h)")
+            if (others.isEmpty()) emit("Aucun pair : fichier gardé en attente")
             else emit("Fichier confié à ${others.size} voisin(s), en attente du destinataire")
             return 1
         }
@@ -573,7 +574,7 @@ class BleMeshManager(private val context: Context) {
     private fun keepBlob(msgId: String, toPeerId: String, frames: List<ByteArray>) {
         purgePendingBlobs()
         if (pendingBlobs.size >= MAX_PENDING_BLOBS) pendingBlobs.removeAt(0)
-        pendingBlobs.add(PendingBlob(msgId, MeshStore.tagFor(toPeerId), frames, System.currentTimeMillis() + BLOB_KEEP_MS))
+        pendingBlobs.add(PendingBlob(msgId, MeshStore.tagFor(toPeerId), frames, System.currentTimeMillis() + RelayConfig.keepMs(context)))
         emit("En attente $msgId")
     }
 
@@ -1015,7 +1016,7 @@ class BleMeshManager(private val context: Context) {
         val ackId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(ackId.toHex())
         val cipher = CryptoEngine.encrypt(byteArrayOf(kind) + originalId, key)
-        val frame = byteArrayOf(TYPE_ACK, RELAY_TTL.toByte()) + ackId + cipher
+        val frame = byteArrayOf(TYPE_ACK, RelayConfig.maxRelays(context).toByte()) + ackId + cipher
         peers.values.toList().forEach { sendTo(it, frame) }
     }
 
@@ -1146,15 +1147,14 @@ class BleMeshManager(private val context: Context) {
         /** Longueur maximale d'un nom d'utilisateur, en caractères. */
         private const val MAX_NAME_CHARS = 20
         /**
-         * Nombre de sauts d'un message : chaque téléphone qui le reçoit le transmet encore,
-         * jusqu'à épuisement. Plus il est grand, plus un message peut voyager loin.
+         * Ancien réglage des sauts, remplacé par RelayConfig.maxRelays(context).
+         * Gardé pour ne pas casser les références existantes.
          */
         private const val RELAY_TTL = 8
         /** Taille maximale d'un contenu envoyé par Bluetooth. Au-delà, il faut Wi-Fi Aware. */
         private const val MAX_BLE_BLOB = 250_000
-        /** Fichiers privés gardés pour les contacts absents : nombre maximal, et durée de conservation. */
+        /** Nombre maximal de fichiers privés gardés pour les contacts absents. */
         private const val MAX_PENDING_BLOBS = 20
-        private const val BLOB_KEEP_MS = 24L * 60 * 60 * 1000
         /** Un téléphone non vu depuis ce délai est considéré comme absent. Vérifié toutes les SWEEP_MS. */
         private const val PEER_TIMEOUT_MS = 30_000L
         private const val SWEEP_MS = 5_000L
