@@ -867,7 +867,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Panneau Debug : compteurs, interrupteurs radio, et distribution de cette copie
+    // Panneau Debug : compteurs, interrupteurs radio, réglages des relais, et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -923,13 +923,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     )
                     RadioRow(
                         title = "Wi-Fi Direct",
-                        note = "Interrupteur prêt. Le transfert ne l'utilise pas encore.",
+                        note = "Gros fichiers privés, avec invitation à accepter sur l'autre téléphone.",
                         checked = radioWifiDirect,
                         enabled = true,
                         color = green,
                         onChange = { on ->
                             radioWifiDirect = on
                             prefs.edit().putBoolean("radio_wifi_direct", on).apply()
+                            MeshService.instance?.setWifiDirectEnabled(on)
                         }
                     )
                     RadioRow(
@@ -947,6 +948,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             prefs.edit().putBoolean("radio_long_range", on).apply()
                         }
                     )
+
+                    Spacer(Modifier.height(14.dp))
+                    RelaySettings(context, green, grey, inkColor)
 
                     Spacer(Modifier.height(14.dp))
                     Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
