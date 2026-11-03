@@ -431,6 +431,20 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     }
 }
 
+/** Icône « trois traits horizontaux » (menu), dessinée à la main. */
+@Composable
+private fun MenuIcon(color: Color, iconSize: Dp = 20.dp) {
+    Canvas(modifier = Modifier.size(iconSize)) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.12f
+        for (i in 0..2) {
+            val y = h * (0.2f + i * 0.3f)
+            drawLine(color, Offset(0f, y), Offset(w, y), strokeWidth = stroke)
+        }
+    }
+}
+
 /** Une ligne avec un interrupteur, pour la section RADIOS du panneau de debug. */
 @Composable
 private fun RadioRow(
@@ -867,7 +881,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Panneau Debug : compteurs, interrupteurs radio, réglages des relais, et distribution de cette copie
+    // Panneau Debug : compteurs, interrupteurs radio, et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -950,9 +964,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     )
 
                     Spacer(Modifier.height(14.dp))
-                    RelaySettings(context, green, grey, inkColor)
-
-                    Spacer(Modifier.height(14.dp))
                     Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("Version : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     Text("Installée depuis : ${dist.installer}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
@@ -998,13 +1009,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         }
 
                         Spacer(Modifier.height(20.dp))
-                        Text("NOM D'UTILISATEUR", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("NOM D'UTILISATEUR", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         TextField(
                             value = nameInput,
                             onValueChange = { nameInput = it.take(20) },
                             singleLine = true,
-                            placeholder = { Text("votre nom", color = grey) },
+                            placeholder = { Text("votre nom", color = grey, fontSize = 12.sp) },
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
@@ -1014,11 +1026,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = green)
                         ) {
-                            Text("Enregistrer", color = Color.White, fontSize = 14.sp)
+                            Text("Enregistrer", color = Color.White, fontSize = 12.sp)
                         }
 
                         Spacer(Modifier.height(20.dp))
-                        Text("THÈME", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("THÈME", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         listOf("système", "clair", "sombre").forEach { option ->
                             Button(
@@ -1028,16 +1040,16 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                     containerColor = if (theme == option) green else lightGrey
                                 )
                             ) {
-                                Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 14.sp)
+                                Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 12.sp)
                             }
-                            Spacer(Modifier.height(8.dp))
+                            Spacer(Modifier.height(6.dp))
                         }
 
                         Spacer(Modifier.height(16.dp))
-                        Text("RÉGLAGES", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("RÉGLAGES", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
-                        Text("Rester actif en arrière-plan", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("Si désactivé, le service s'arrête quand l'app est quittée", color = grey, fontSize = 12.sp)
+                        Text("Rester actif en arrière-plan", color = inkColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Si désactivé, le service s'arrête quand l'app est quittée", color = grey, fontSize = 10.sp)
                         Spacer(Modifier.height(6.dp))
                         Switch(
                             checked = AppState.runInBackground,
@@ -1046,11 +1058,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         )
 
                         Spacer(Modifier.height(16.dp))
-                        Text("Live push-to-talk", color = inkColor, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text("Live push-to-talk", color = inkColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Text(
                             "Maintenir le micro pour parler en direct à un contact à portée. Un appui bref envoie toujours un vocal.",
                             color = grey,
-                            fontSize = 12.sp
+                            fontSize = 10.sp
                         )
                         Spacer(Modifier.height(6.dp))
                         Switch(
@@ -1062,34 +1074,38 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             colors = SwitchDefaults.colors(checkedTrackColor = green)
                         )
 
+                        // Relais : nombre maximum de sauts, fanout, et durée de conservation
+                        Spacer(Modifier.height(16.dp))
+                        RelaySettings(context, green, grey, inkColor)
+
                         // Contacts par QR code : afficher le sien, ou scanner celui d'une autre personne
                         Spacer(Modifier.height(16.dp))
-                        Text("CONTACTS PAR QR CODE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("CONTACTS PAR QR CODE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         Button(
                             onClick = { showSettings = false; showMyQr = true },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = green)
                         ) {
-                            Text("Mon QR code", color = Color.White, fontSize = 14.sp)
+                            Text("Mon QR code", color = Color.White, fontSize = 12.sp)
                         }
-                        Spacer(Modifier.height(8.dp))
+                        Spacer(Modifier.height(6.dp))
                         Button(
                             onClick = { showSettings = false; startScan() },
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = green)
                         ) {
-                            Text("Scanner un QR code", color = Color.White, fontSize = 14.sp)
+                            Text("Scanner un QR code", color = Color.White, fontSize = 12.sp)
                         }
                         Text(
                             "Scanne le QR de quelqu'un pour l'ajouter, même s'il est loin.",
                             color = grey,
-                            fontSize = 12.sp
+                            fontSize = 10.sp
                         )
 
                         // Partage de l'application, par le menu Android (Bluetooth, Nearby Share, etc.)
                         Spacer(Modifier.height(16.dp))
-                        Text("PARTAGER", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("PARTAGER", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
                         Button(
                             onClick = {
@@ -1098,19 +1114,19 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             modifier = Modifier.fillMaxWidth(),
                             colors = ButtonDefaults.buttonColors(containerColor = blue)
                         ) {
-                            Text("Partager Samchat", color = Color.White, fontSize = 14.sp)
+                            Text("Partager Samchat", color = Color.White, fontSize = 12.sp)
                         }
                         Text(
                             "Envoie l'application par Bluetooth ou Nearby Share, sans internet.",
                             color = grey,
-                            fontSize = 12.sp
+                            fontSize = 10.sp
                         )
 
                         Spacer(Modifier.height(16.dp))
-                        Text("LANGUE", color = grey, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("LANGUE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
-                        Text("Français", color = inkColor, fontSize = 14.sp)
-                        Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 12.sp)
+                        Text("Français", color = inkColor, fontSize = 12.sp)
+                        Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 10.sp)
 
                         // Outils de debug, en bas du panneau
                         Spacer(Modifier.height(16.dp))
@@ -1125,9 +1141,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                 }
                                 .padding(vertical = 10.dp)
                         ) {
-                            BugIcon(orange, 26.dp)
+                            BugIcon(orange, 22.dp)
                             Spacer(Modifier.width(10.dp))
-                            Text("outils de debug", color = inkColor, fontSize = 15.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                            Text("outils de debug", color = inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
@@ -1140,7 +1156,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : logo, /@nom, mesh, pairs et ⚙ paramètres
+            // En-tête : logo, /@nom, mesh, pairs et bouton menu (trois traits)
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 Image(
                     painter = painterResource(id = R.mipmap.ic_launcher),
@@ -1160,7 +1176,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
                 Text("👥 ${peers.size}", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = { nameInput = myName; showSettings = true }) { Text("⚙", fontSize = 18.sp) }
+                TextButton(onClick = { nameInput = myName; showSettings = true }) {
+                    MenuIcon(inkColor, 20.dp)
+                }
             }
 
             Spacer(Modifier.height(8.dp))
