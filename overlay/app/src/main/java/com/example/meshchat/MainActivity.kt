@@ -56,8 +56,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -436,6 +438,95 @@ private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color
             }
         }
     }
+}
+
+/**
+ * Enregistre un fichier de l'app dans Téléchargements/Samchat, pour qu'il reste visible.
+ * Retourne le nom du fichier enregistré, ou null en cas d'échec.
+ */
+private fun saveToDownloads(context: Context, source: String, mime: String, prefix: String): String? {
+    val src = File(source)
+    if (!src.exists()) return null
+    val ext = src.extension.ifEmpty { "bin" }
+    val name = "${prefix}_${System.currentTimeMillis()}.$ext"
+    return try {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Samchat")
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
+            context.contentResolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { input -> input.copyTo(out) }
+            } ?: return null
+        } else {
+            val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Samchat")
+            dir.mkdirs()
+            src.copyTo(File(dir, name), overwrite = true)
+        }
+        name
+    } catch (e: Exception) {
+        null
+    }
+}
+
+/** Informations de distribution de cette copie, affichées dans les outils de debug. */
+private class DistributionInfo(val version: String, val installer: String, val fingerprint: String)
+
+/** Lit la version, l'installateur et l'empreinte SHA-256 du certificat qui a signé cette copie. */
+private fun readDistribution(context: Context): DistributionInfo {
+    val pm = context.packageManager
+    val pkg = context.packageName
+
+    val version = try {
+        @Suppress("DEPRECATION")
+        val info = pm.getPackageInfo(pkg, 0)
+        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
+        "${info.versionName ?: "?"} ($code)"
+    } catch (e: Exception) {
+        "indisponible"
+    }
+
+    val installer = try {
+        val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            pm.getInstallSourceInfo(pkg).installingPackageName
+        } else {
+            @Suppress("DEPRECATION")
+            pm.getInstallerPackageName(pkg)
+        }
+        name ?: "inconnue (installation manuelle)"
+    } catch (e: Exception) {
+        "inconnue"
+    }
+
+    val fingerprint = signingBytes(context)?.let { bytes ->
+        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
+    } ?: "indisponible"
+
+    return DistributionInfo(version, installer, fingerprint)
+}
+
+/** Certificat qui a signé l'application, en octets. Null si Android ne le fournit pas. */
+@Suppress("DEPRECATION")
+private fun signingBytes(context: Context): ByteArray? = try {
+    val pm = context.packageManager
+    val pkg = context.packageName
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
+        info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+    } else {
+        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES)
+        info.signatures?.firstOrNull()?.toByteArray()
+    }
+} catch (e: Exception) {
+    null
+}
+
+/** Copie un texte dans le presse-papiers du téléphone. */
+private fun copyToClipboard(context: Context, text: String) {
+    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+    cm.setPrimaryClip(ClipData.newPlainText("empreinte", text))
 }
 
 /** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
@@ -1050,7 +1141,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             onValueChange = { nameInput = it.take(20) },
                             singleLine = true,
                             placeholder = { Text("votre nom", color = grey, fontSize = 12.sp) },
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                            textStyle = TextStyle(fontSize = 13.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
@@ -1071,7 +1162,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
                             singleLine = true,
                             placeholder = { Text("ton statut", color = grey, fontSize = 12.sp) },
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                            textStyle = TextStyle(fontSize = 13.sp),
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(Modifier.height(8.dp))
@@ -1293,7 +1384,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             if (selectedChat != PUBLIC) {
                 val status = ProfileStore.statusOf(context, selectedChat)
                 if (status.isNotBlank()) {
-                    Text(status, color = inkColor, fontSize = 11.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                    Text(status, color = inkColor, fontSize = 11.sp, fontStyle = FontStyle.Italic)
                 }
             }
 
