@@ -178,6 +178,13 @@ object MeshState {
     /** Nombre de pairs trouvés par Wi-Fi Aware (rempli par le service). */
     var wifiPeers by mutableStateOf(0)
 
+    /**
+     * Compteur qui change à chaque profil de contact accepté (statut ou photo).
+     * L'écran le lit pour se rafraîchir sans attendre qu'on rouvre la discussion.
+     */
+    var profileTick by mutableStateOf(0)
+        private set
+
     /** Dernier statut connu de chaque message privé, pour les bulles créées après l'arrivée du statut. */
     private val statusById = HashMap<String, String>()
 
@@ -463,6 +470,11 @@ object MeshState {
             }
             line.startsWith("En attente ") -> {
                 setStatus(line.removePrefix("En attente ").trim(), "⏳ En attente")
+                addJournal(line)
+            }
+            line.startsWith("Profil reçu de ") -> {
+                // Un profil de contact a été accepté : l'écran doit se rafraîchir
+                profileTick++
                 addJournal(line)
             }
             line.startsWith("Reçu privé de ") -> {
