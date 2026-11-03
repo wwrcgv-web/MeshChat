@@ -77,6 +77,11 @@ class BleMeshManager(private val context: Context) {
         val parts = arrayOfNulls<ByteArray>(total)
     }
 
+    /** Un profil en cours de réception, rassemblé à partir de ses morceaux. */
+    private class ProfileAssembly(total: Int, val createdAt: Long) {
+        val parts = arrayOfNulls<ByteArray>(total)
+    }
+
     /** Fichier privé gardé par ce téléphone jusqu'à confirmation de réception ou expiration. */
     private class Holding(
         val tag: ByteArray,
@@ -102,11 +107,17 @@ class BleMeshManager(private val context: Context) {
     private val liveAssemblies = ConcurrentHashMap<Int, LiveAssembly>()
     private val lastLiveSeq = ConcurrentHashMap<String, Int>()
 
+    /** Profils en cours de réception, par « expéditeur:version ». */
+    private val profileAssemblies = ConcurrentHashMap<String, ProfileAssembly>()
+
     /** Fichiers privés gardés par ce téléphone, par identifiant de fichier. Protégé par synchronized(holdings). */
     private val holdings = LinkedHashMap<String, Holding>()
 
-    /** Profil en attente pour chaque contact absent : une seule trame par contact, la plus récente. Protégé par synchronized(pendingProfiles). */
-    private val pendingProfiles = HashMap<String, ByteArray>()
+    /**
+     * Profil complet (tous ses morceaux) en attente pour chaque contact absent : un seul par contact,
+     * le plus récent remplace l'ancien. Protégé par synchronized(pendingProfiles).
+     */
+    private val pendingProfiles = HashMap<String, List<ByteArray>>()
 
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
 
@@ -243,9 +254,7 @@ class BleMeshManager(private val context: Context) {
     /** Secret partagé brut avec un contact (en octets), pour calculer les boîtes quotidiennes. */
     private fun sharedSecretBytes(peerId: String): ByteArray? = sharedKeyWith(peerId)?.encoded
 
-    /**
-     * Étiquettes de boîte à attendre de ce contact (aujourd'hui et hier). Vide si la clé n'est pas connue.
-     */
+    /** Étiquettes de boîte à attendre de ce contact (aujourd'hui et hier). Vide si la clé n'est pas connue. */
     private fun inboxTagsFor(peerId: String): List<ByteArray> {
         val secret = sharedSecretBytes(peerId) ?: return emptyList()
         return MeshStore.boxTagsToCheck(secret)
@@ -605,39 +614,83 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Profil d'un contact, chiffré avec le secret partagé. Trame : type (1) + identifiant de l'expéditeur (8)
-     * + données chiffrées. Le contenu clair est (version, statut), décodé par ProfileStore.
+     * Découpe le profil complet (statut et photo, chiffrés avec le secret partagé de ce contact)
+     * en morceaux. Trame : type (1) + mon identifiant (8) + version (4) + rang (1) + nombre (1) + données.
      */
-    private fun profileFrame(peerId: String, plain: ByteArray): ByteArray? {
+    private fun profileFrames(peerId: String, version: Int, plain: ByteArray): List<ByteArray>? {
         val key = sharedKeyWith(peerId) ?: return null
         val cipher = CryptoEngine.encrypt(plain, key)
-        return byteArrayOf(TYPE_PROFILE) + myId + cipher
+        val total = (cipher.size + PROFILE_PART_BYTES - 1) / PROFILE_PART_BYTES
+        if (total <= 0 || total > 255) return null
+        val versionBytes = version.toBytes4()
+        return (0 until total).map { i ->
+            val from = i * PROFILE_PART_BYTES
+            val to = minOf(cipher.size, from + PROFILE_PART_BYTES)
+            byteArrayOf(TYPE_PROFILE_PART) + myId + versionBytes +
+                byteArrayOf(i.toByte(), total.toByte()) + cipher.copyOfRange(from, to)
+        }
     }
 
     /**
-     * Envoie mon profil (statut et version) à chaque contact. Ceux à portée le reçoivent tout de suite ;
+     * Envoie mon profil (statut, version et photo) à chaque contact. Ceux à portée le reçoivent tout de suite ;
      * les absents gardent une seule version, la plus récente remplace l'ancienne.
-     * À appeler à chaque enregistrement du statut.
+     * À appeler à chaque enregistrement du statut ou de la photo.
      */
     fun broadcastProfile() {
         val version = ProfileStore.myVersion(context)
         val status = ProfileStore.myStatus(context)
-        val plain = ProfileStore.encode(version, status)
+        val avatar = ProfileStore.myAvatar(context)
+        val plain = ProfileStore.encodeWithAvatar(version, status, avatar)
         val nowHere = peers.entries.toList()
         for (peerId in peerKeys.keys) {
-            val frame = profileFrame(peerId, plain) ?: continue
+            val frames = profileFrames(peerId, version, plain) ?: continue
             val device = nowHere.firstOrNull { peerIds[it.key] == peerId }?.value
             if (device != null) {
-                enqueue(device, listOf(frame))
+                enqueue(device, frames)
             } else {
-                synchronized(pendingProfiles) { pendingProfiles[peerId] = frame }
+                synchronized(pendingProfiles) { pendingProfiles[peerId] = frames }
             }
         }
-        emit("Profil envoyé (version $version)")
+        emit("Profil envoyé (version $version, ${if (avatar != null) "avec photo" else "sans photo"})")
     }
 
-    /** Reçoit un profil : accepté seulement s'il est plus récent que celui qu'on a déjà. */
-    private fun handleProfile(fromAddress: String, body: ByteArray) {
+    /**
+     * Reçoit un morceau de profil. Quand tous les morceaux sont là, le profil est déchiffré et accepté
+     * seulement s'il est plus récent que celui qu'on a déjà.
+     */
+    private fun handleProfilePart(body: ByteArray) {
+        val idSize = MeshPacket.ID_SIZE
+        val header = idSize + 4 + 2
+        if (body.size <= header) return
+        val senderId = body.copyOfRange(0, idSize).toHex()
+        val version = body.toInt4(idSize)
+        val index = body[idSize + 4].toInt() and 0xFF
+        val total = body[idSize + 5].toInt() and 0xFF
+        if (total == 0 || index >= total) return
+        if (version <= ProfileStore.versionOf(context, senderId)) return
+        val secret = sharedKeyWith(senderId) ?: return
+        val part = body.copyOfRange(header, body.size)
+
+        val now = System.currentTimeMillis()
+        profileAssemblies.entries.removeIf { now - it.value.createdAt > PROFILE_ASSEMBLY_MS }
+        val assemblyKey = "$senderId:$version"
+        val assembly = profileAssemblies.getOrPut(assemblyKey) { ProfileAssembly(total, now) }
+        if (assembly.parts.size != total) return
+        assembly.parts[index] = part
+        if (assembly.parts.any { it == null }) return
+        profileAssemblies.remove(assemblyKey)
+
+        val cipher = assembly.parts.fold(ByteArray(0)) { acc, p -> acc + p!! }
+        val plain = CryptoEngine.decrypt(cipher, secret) ?: return
+        val decoded = ProfileStore.decodeWithAvatar(plain) ?: return
+        if (decoded.first != version) return
+        if (ProfileStore.acceptFromPeer(context, senderId, version, decoded.second, decoded.third)) {
+            emit("Profil reçu de ${(peerNames[senderId] ?: senderId).take(8)} (version $version)")
+        }
+    }
+
+    /** Ancien format de profil (statut seul), gardé pour compatibilité avec les anciennes versions. */
+    private fun handleProfile(body: ByteArray) {
         val idSize = MeshPacket.ID_SIZE
         if (body.size <= idSize) return
         val senderId = body.copyOfRange(0, idSize).toHex()
@@ -818,7 +871,7 @@ class BleMeshManager(private val context: Context) {
                     val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
                     enqueue(r.device, frames)
                     holdingsFor(id).forEach { blobFrames -> enqueue(r.device, blobFrames) }
-                    synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(r.device, listOf(it)) }
+                    synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(r.device, it) }
                 }
             }
         }
@@ -850,7 +903,8 @@ class BleMeshManager(private val context: Context) {
             TYPE_SECRET -> handleSecret(fromAddress, value.copyOfRange(1, value.size))
             TYPE_ACK -> handleAck(fromAddress, value.copyOfRange(1, value.size))
             TYPE_LIVE -> handleLive(value.copyOfRange(1, value.size))
-            TYPE_PROFILE -> handleProfile(fromAddress, value.copyOfRange(1, value.size))
+            TYPE_PROFILE -> handleProfile(value.copyOfRange(1, value.size))
+            TYPE_PROFILE_PART -> handleProfilePart(value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -981,6 +1035,10 @@ class BleMeshManager(private val context: Context) {
         return items.map { byteArrayOf(TYPE_SECRET, 1.toByte()) + it.id + it.tag + it.cipher }
     }
 
+    /**
+     * Accusé chiffré (Reçu ou Lu). Format : ttl (1) + identifiant de l'accusé (8) + identifiant du message
+     * confirmé, en clair (8) + données chiffrées.
+     */
     private fun sendAck(peerId: String, originalId: ByteArray, kind: Byte) {
         val key = sharedKeyWith(peerId) ?: return
         val ackId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
@@ -1072,7 +1130,6 @@ class BleMeshManager(private val context: Context) {
         acceptPrivateBlob(opened.first, opened.second)
     }
 
-    /** Relais d'un fragment privé : fanout limité, sauf l'expéditeur. */
     private fun relayPrivateFragment(ttl: Int, tag: ByteArray, blobId: ByteArray, chunk: ByteArray, exceptAddress: String) {
         val candidates = peers.values.filter { it.address != exceptAddress }
         if (candidates.isEmpty()) return
@@ -1082,7 +1139,6 @@ class BleMeshManager(private val context: Context) {
         chosen.forEach { sendTo(it, frame) }
     }
 
-    /** Relais d'un message public : fanout limité, sauf l'expéditeur. */
     private fun relay(packet: MeshPacket, exceptAddress: String) {
         val candidates = peers.values.filter { it.address != exceptAddress }
         if (candidates.isEmpty()) return
@@ -1112,6 +1168,7 @@ class BleMeshManager(private val context: Context) {
         seenFragments.clear()
         pendingRead.clear()
         liveAssemblies.clear()
+        profileAssemblies.clear()
         publishPeers()
         instance = null
     }
@@ -1133,6 +1190,10 @@ class BleMeshManager(private val context: Context) {
         private const val LIVE_PART_BYTES = 200
         private const val LIVE_TIMEOUT_MS = 6_000L
         private const val LIVE_ASSEMBLY_MS = 5_000L
+        /** Taille d'un morceau de profil, avant l'en-tête de la trame. */
+        private const val PROFILE_PART_BYTES = 180
+        /** Délai après lequel un profil incomplet est abandonné. */
+        private const val PROFILE_ASSEMBLY_MS = 60_000L
         private const val PRIO_LIVE = 0
         private const val PRIO_NORMAL = 1
         private const val TYPE_TEXT: Byte = 1
@@ -1142,6 +1203,7 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_ACK: Byte = 5
         private const val TYPE_LIVE: Byte = 6
         private const val TYPE_PROFILE: Byte = 7
+        private const val TYPE_PROFILE_PART: Byte = 8
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
