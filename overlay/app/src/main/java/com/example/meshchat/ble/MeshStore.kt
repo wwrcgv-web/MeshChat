@@ -28,6 +28,19 @@ class MeshStore {
         return items.filter { it.tag.contentEquals(tag) }
     }
 
+    /** Tous les messages gardés (utilisé par les relais pour les transmettre aux nouveaux téléphones). */
+    @Synchronized
+    fun all(): List<Item> {
+        purge()
+        return items.toList()
+    }
+
+    /** Supprime un message gardé, dès que sa livraison est confirmée. */
+    @Synchronized
+    fun remove(id: ByteArray) {
+        items.removeAll { it.id.contentEquals(id) }
+    }
+
     private fun purge() {
         val now = System.currentTimeMillis()
         items.removeAll { it.expiresAt <= now }
@@ -40,10 +53,7 @@ class MeshStore {
         const val KEEP_MS = 24 * 60 * 60 * 1000L
         const val TAG_SIZE = 8
 
-        /**
-         * Ancienne étiquette : empreinte de l'identifiant public du destinataire.
-         * Toujours utilisée par BleMeshManager tant que la boîte quotidienne n'est pas branchée.
-         */
+        /** Ancienne étiquette : empreinte de l'identifiant public du destinataire. */
         fun tagFor(peerIdHex: String): ByteArray {
             val bytes = peerIdHex.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
             val digest = MessageDigest.getInstance("SHA-256")
@@ -51,13 +61,10 @@ class MeshStore {
             return digest.digest(bytes).copyOfRange(0, TAG_SIZE)
         }
 
-        /** Jour courant (UTC), compté en jours depuis 1970. Les deux téléphones calculent donc le même jour. */
+        /** Jour courant (UTC), compté en jours depuis 1970. */
         fun currentDay(nowMs: Long = System.currentTimeMillis()): Long = nowMs / 86_400_000L
 
-        /**
-         * Boîte quotidienne : étiquette calculée à partir du secret partagé entre deux personnes et du jour.
-         * Seuls l'expéditeur et le destinataire peuvent la calculer. Elle change chaque jour.
-         */
+        /** Boîte quotidienne : étiquette calculée à partir du secret partagé entre deux personnes et du jour. */
         fun boxTag(sharedSecret: ByteArray, day: Long): ByteArray {
             val mac = Mac.getInstance("HmacSHA256")
             mac.init(SecretKeySpec(sharedSecret, "HmacSHA256"))
@@ -66,10 +73,7 @@ class MeshStore {
             return mac.doFinal().copyOfRange(0, TAG_SIZE)
         }
 
-        /**
-         * Les deux boîtes à tester à la réception : celle d'aujourd'hui et celle d'hier.
-         * Cela couvre le passage de minuit entre deux téléphones qui ne sont pas à la même seconde.
-         */
+        /** Les deux boîtes à tester à la réception : aujourd'hui et hier. */
         fun boxTagsToCheck(sharedSecret: ByteArray, nowMs: Long = System.currentTimeMillis()): List<ByteArray> {
             val today = currentDay(nowMs)
             return listOf(boxTag(sharedSecret, today), boxTag(sharedSecret, today - 1))
