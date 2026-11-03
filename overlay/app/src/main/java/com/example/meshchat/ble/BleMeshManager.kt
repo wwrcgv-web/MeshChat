@@ -82,6 +82,9 @@ class BleMeshManager(private val context: Context) {
         val parts = arrayOfNulls<ByteArray>(total)
     }
 
+    /** Un téléphone vu récemment, gardé même après extinction du Bluetooth, pour lui dire « je suis là ». */
+    private class LastKnown(val device: BluetoothDevice, val seenAt: Long)
+
     /** Fichier privé gardé par ce téléphone jusqu'à confirmation de réception ou expiration. */
     private class Holding(
         val tag: ByteArray,
@@ -109,6 +112,9 @@ class BleMeshManager(private val context: Context) {
 
     /** Profils en cours de réception, par « expéditeur:version ». */
     private val profileAssemblies = ConcurrentHashMap<String, ProfileAssembly>()
+
+    /** Téléphones vus récemment, par identifiant. Non effacé à l'extinction du Bluetooth. */
+    private val lastKnown = ConcurrentHashMap<String, LastKnown>()
 
     /** Fichiers privés gardés par ce téléphone, par identifiant de fichier. Protégé par synchronized(holdings). */
     private val holdings = LinkedHashMap<String, Holding>()
@@ -286,6 +292,11 @@ class BleMeshManager(private val context: Context) {
         return null
     }
 
+    /**
+     * Interrupteur Bluetooth BLE.
+     * Désactivé : on prévient les pairs en vue (« je pars »), puis on coupe annonce, scan et serveur.
+     * Activé : on relance annonce, scan et serveur, puis on prévient les pairs récents (« je suis là »).
+     */
     fun setBleEnabled(on: Boolean) {
         if (on == bleOn) return
         bleOn = on
@@ -294,8 +305,10 @@ class BleMeshManager(private val context: Context) {
             emit("Bluetooth BLE activé")
             startGattServer()
             startAdvertising()
+            sendPeerHereNow()
         } else {
             emit("Bluetooth BLE désactivé")
+            sendPeerLeaveNow()
             pauseScan()
             try {
                 if (advertising) adapter?.bluetoothLeAdvertiser?.stopAdvertising(callback)
@@ -310,6 +323,37 @@ class BleMeshManager(private val context: Context) {
             lastSeen.clear()
             publishPeers()
         }
+    }
+
+    /**
+     * Envoie « je pars » aux pairs en vue, dans un fil séparé et avec un délai court.
+     * Best effort : si le Bluetooth est coupé brutalement, rien ne part et le délai de 30 s prend le relais.
+     */
+    private fun sendPeerLeaveNow() {
+        val targets = peers.values.toList()
+        if (targets.isEmpty()) return
+        val frame = byteArrayOf(TYPE_PEER_LEAVE) + myId
+        Thread {
+            targets.forEach { device ->
+                try {
+                    connectAndWrite(device, listOf(frame), PEER_NOTICE_TIMEOUT_MS)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Trame « je pars » non envoyée", e)
+                }
+            }
+        }.start()
+        emit("Trame « je pars » envoyée à ${targets.size} pair(s)")
+    }
+
+    /** Envoie « je suis là » aux téléphones vus récemment, pour qu'ils te remettent en liste tout de suite. */
+    private fun sendPeerHereNow() {
+        val now = System.currentTimeMillis()
+        lastKnown.entries.removeIf { now - it.value.seenAt > LAST_KNOWN_MS }
+        val targets = lastKnown.values.map { it.device }
+        if (targets.isEmpty()) return
+        val frame = byteArrayOf(TYPE_PEER_HERE) + myId
+        targets.forEach { enqueue(it, listOf(frame)) }
+        emit("Trame « je suis là » envoyée à ${targets.size} pair(s)")
     }
 
     fun startAdvertising() {
@@ -634,7 +678,6 @@ class BleMeshManager(private val context: Context) {
     /**
      * Envoie mon profil (statut, version et photo) à chaque contact. Ceux à portée le reçoivent tout de suite ;
      * les absents gardent une seule version, la plus récente remplace l'ancienne.
-     * À appeler à chaque enregistrement du statut ou de la photo.
      */
     fun broadcastProfile() {
         val version = ProfileStore.myVersion(context)
@@ -700,6 +743,34 @@ class BleMeshManager(private val context: Context) {
         if (ProfileStore.acceptFromPeer(context, senderId, decoded.first, decoded.second)) {
             emit("Profil reçu de ${senderId.take(8)} (version ${decoded.first})")
         }
+    }
+
+    /** « Je pars » : retire immédiatement ce téléphone de la liste des pairs à portée. */
+    private fun handlePeerLeave(body: ByteArray) {
+        val idSize = MeshPacket.ID_SIZE
+        if (body.size < idSize) return
+        val id = body.copyOfRange(0, idSize).toHex()
+        val macs = peerIds.filter { it.value == id }.keys.toList()
+        if (macs.isEmpty()) return
+        macs.forEach {
+            peers.remove(it)
+            peerIds.remove(it)
+            lastSeen.remove(it)
+        }
+        emit("Pair parti : ${(peerNames[id] ?: id).take(8)}")
+        publishPeers()
+    }
+
+    /** « Je suis là » : remet immédiatement ce téléphone dans la liste, et lance l'échange de clé. */
+    private fun handlePeerHere(mac: String, body: ByteArray) {
+        val idSize = MeshPacket.ID_SIZE
+        if (body.size < idSize) return
+        val id = body.copyOfRange(0, idSize).toHex()
+        if (id == myId.toHex()) return
+        val device = adapter?.getRemoteDevice(mac) ?: return
+        peers[mac] = device
+        lastSeen[mac] = System.currentTimeMillis()
+        onPeerSeen(device, id)
     }
 
     private fun sendTo(device: BluetoothDevice, frame: ByteArray) = enqueue(device, listOf(frame))
@@ -859,23 +930,32 @@ class BleMeshManager(private val context: Context) {
             peers.put(mac, r.device)
             val idBytes = r.scanRecord?.getManufacturerSpecificData(COMPANY_ID)
             if (idBytes != null && idBytes.size == MeshPacket.ID_SIZE) {
-                val id = idBytes.toHex()
-                if (peerIds.put(mac, id) == null) {
-                    peerIds.filter { it.value == id && it.key != mac }.keys.toList().forEach {
-                        peers.remove(it)
-                        peerIds.remove(it)
-                        lastSeen.remove(it)
-                    }
-                    emit("Pair trouvé : ${(peerNames[id] ?: id).take(8)}")
-                    publishPeers()
-                    val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
-                    enqueue(r.device, frames)
-                    holdingsFor(id).forEach { blobFrames -> enqueue(r.device, blobFrames) }
-                    synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(r.device, it) }
-                }
+                onPeerSeen(r.device, idBytes.toHex())
             }
         }
         override fun onScanFailed(errorCode: Int) { emit("Échec scan : $errorCode") }
+    }
+
+    /**
+     * Un pair est vu (par scan ou par trame « je suis là »). Si c'est une nouvelle rencontre,
+     * on échange les clés, les messages gardés, les profils et les fichiers en attente.
+     */
+    private fun onPeerSeen(device: BluetoothDevice, id: String) {
+        val mac = device.address
+        lastKnown[id] = LastKnown(device, System.currentTimeMillis())
+        if (peerIds.put(mac, id) == null) {
+            peerIds.filter { it.value == id && it.key != mac }.keys.toList().forEach {
+                peers.remove(it)
+                peerIds.remove(it)
+                lastSeen.remove(it)
+            }
+            emit("Pair trouvé : ${(peerNames[id] ?: id).take(8)}")
+            publishPeers()
+            val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
+            enqueue(device, frames)
+            holdingsFor(id).forEach { blobFrames -> enqueue(device, blobFrames) }
+            synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(device, it) }
+        }
     }
 
     private fun queuedFrames(): List<ByteArray> {
@@ -905,6 +985,8 @@ class BleMeshManager(private val context: Context) {
             TYPE_LIVE -> handleLive(value.copyOfRange(1, value.size))
             TYPE_PROFILE -> handleProfile(value.copyOfRange(1, value.size))
             TYPE_PROFILE_PART -> handleProfilePart(value.copyOfRange(1, value.size))
+            TYPE_PEER_LEAVE -> handlePeerLeave(value.copyOfRange(1, value.size))
+            TYPE_PEER_HERE -> handlePeerHere(fromAddress, value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -1190,6 +1272,10 @@ class BleMeshManager(private val context: Context) {
         private const val LIVE_PART_BYTES = 200
         private const val LIVE_TIMEOUT_MS = 6_000L
         private const val LIVE_ASSEMBLY_MS = 5_000L
+        /** Délai court pour les trames « je pars » : elles doivent partir avant la coupure. */
+        private const val PEER_NOTICE_TIMEOUT_MS = 2_000L
+        /** Un téléphone vu il y a moins de ce délai reçoit « je suis là » à la réactivation du Bluetooth. */
+        private const val LAST_KNOWN_MS = 10 * 60 * 1000L
         /** Taille d'un morceau de profil, avant l'en-tête de la trame. */
         private const val PROFILE_PART_BYTES = 180
         /** Délai après lequel un profil incomplet est abandonné. */
@@ -1204,6 +1290,10 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_LIVE: Byte = 6
         private const val TYPE_PROFILE: Byte = 7
         private const val TYPE_PROFILE_PART: Byte = 8
+        /** « Je pars » : le téléphone désactive son Bluetooth. */
+        private const val TYPE_PEER_LEAVE: Byte = 9
+        /** « Je suis là » : le téléphone réactive son Bluetooth. */
+        private const val TYPE_PEER_HERE: Byte = 10
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
