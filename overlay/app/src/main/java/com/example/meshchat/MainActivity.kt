@@ -700,6 +700,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
     var myName by remember { mutableStateOf(prefs.getString("my_name", "") ?: "") }
+    var myAvatar by remember {
+        mutableStateOf(ProfileStore.myAvatar(context)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) })
+    }
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
     val dist = remember { readDistribution(context) }
@@ -741,6 +744,24 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         ProfileStore.setMyStatus(context, statusInput)
         BleMeshManager.instance?.broadcastProfile()
         log("Statut enregistré")
+    }
+
+    // Photo de profil : choisie dans la galerie, recadrée et réduite, puis envoyée aux contacts
+    val avatarLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        val bitmap = uri?.let {
+            context.contentResolver.openInputStream(it)?.use { stream ->
+                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply { inSampleSize = 2 })
+            }
+        }
+        if (bitmap == null) {
+            log("Photo de profil illisible")
+        } else if (ProfileStore.setMyAvatar(context, bitmap) == null) {
+            log("Photo de profil impossible à enregistrer")
+        } else {
+            myAvatar = ProfileStore.myAvatar(context)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+            BleMeshManager.instance?.broadcastProfile()
+            log("Photo de profil enregistrée")
+        }
     }
 
     // Thème : « système » suit le réglage du téléphone
@@ -1154,6 +1175,37 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             Text("Enregistrer", color = Color.White, fontSize = 12.sp)
                         }
 
+                        // Photo de profil : aperçu, puis choix dans la galerie
+                        Spacer(Modifier.height(16.dp))
+                        Text("PHOTO DE PROFIL", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            val avatarPreview = myAvatar
+                            if (avatarPreview != null) {
+                                Image(
+                                    bitmap = avatarPreview.asImageBitmap(),
+                                    contentDescription = "Ma photo de profil",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.size(56.dp).clip(CircleShape)
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier.size(56.dp).clip(CircleShape).background(lightGrey),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text("?", color = grey, fontSize = 18.sp)
+                                }
+                            }
+                            Spacer(Modifier.width(12.dp))
+                            Button(
+                                onClick = { avatarLauncher.launch("image/*") },
+                                colors = ButtonDefaults.buttonColors(containerColor = green)
+                            ) {
+                                Text("Choisir", color = Color.White, fontSize = 12.sp)
+                            }
+                        }
+                        Text("Recadrée en carré, envoyée à chaque contact.", color = grey, fontSize = 10.sp)
+
                         Spacer(Modifier.height(16.dp))
                         Text("STATUT (60 caractères)", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(8.dp))
@@ -1322,7 +1374,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.width(10.dp))
                 Text("👥 ${peers.size}", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = { nameInput = myName; showSettings = true }) {
+                TextButton(onClick = {
+                    nameInput = myName
+                    statusInput = ProfileStore.myStatus(context)
+                    showSettings = true
+                }) {
                     MenuIcon(inkColor, 20.dp)
                 }
             }
@@ -1374,7 +1430,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
             Spacer(Modifier.height(6.dp))
 
-            // Titre de la conversation affichée, avec le statut du contact si on le connaît
+            // Titre de la conversation, avec la photo et le statut du contact si on les connaît
             Text(
                 if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
                 color = grey,
@@ -1382,9 +1438,23 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 fontFamily = FontFamily.Monospace
             )
             if (selectedChat != PUBLIC) {
+                val contactAvatar = remember(selectedChat, contacts) {
+                    ProfileStore.avatarBitmapOf(context, selectedChat)
+                }
                 val status = ProfileStore.statusOf(context, selectedChat)
-                if (status.isNotBlank()) {
-                    Text(status, color = inkColor, fontSize = 11.sp, fontStyle = FontStyle.Italic)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    contactAvatar?.let {
+                        Image(
+                            bitmap = it.asImageBitmap(),
+                            contentDescription = "Photo de profil",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.size(28.dp).clip(CircleShape)
+                        )
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    if (status.isNotBlank()) {
+                        Text(status, color = inkColor, fontSize = 11.sp, fontStyle = FontStyle.Italic)
+                    }
                 }
             }
 
