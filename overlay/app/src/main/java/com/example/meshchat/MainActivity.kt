@@ -662,9 +662,20 @@ private fun CircleButton(label: String, background: Color, textColor: Color, siz
     }
 }
 
-/** Bouton de choix de conversation. Un contact hors de portée apparaît en grisé. */
+/**
+ * Bouton de choix de conversation : photo du contact (si connue) à gauche du nom.
+ * Un contact hors de portée apparaît en grisé.
+ */
 @Composable
-private fun ChatChip(label: String, selected: Boolean, online: Boolean, green: Color, inkColor: Color, onClick: () -> Unit) {
+private fun ChatChip(
+    label: String,
+    selected: Boolean,
+    online: Boolean,
+    green: Color,
+    inkColor: Color,
+    avatar: Bitmap?,
+    onClick: () -> Unit
+) {
     Button(
         onClick = onClick,
         colors = ButtonDefaults.buttonColors(
@@ -676,6 +687,15 @@ private fun ChatChip(label: String, selected: Boolean, online: Boolean, green: C
             selected -> Color.White
             online -> inkColor
             else -> inkColor.copy(alpha = 0.4f)
+        }
+        if (avatar != null) {
+            Image(
+                bitmap = avatar.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(18.dp).clip(CircleShape)
+            )
+            Spacer(Modifier.width(6.dp))
         }
         Text(label, color = textColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
     }
@@ -725,6 +745,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val bubbles = MeshState.bubbles
     val counts = MeshState.counts
     val displayName = if (myName.isNotBlank()) myName else pseudo
+
+    // Rafraîchissement : ce compteur change dès qu'un profil de contact est accepté
+    val profileTick = MeshState.profileTick
 
     fun log(line: String) = MeshState.addJournal(line)
 
@@ -1412,25 +1435,30 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
             Spacer(Modifier.height(8.dp))
 
-            // Choix de la conversation : Tous, puis chaque contact (grisé s'il est hors de portée)
+            // Choix de la conversation : Tous, puis chaque contact avec sa photo (grisé s'il est hors de portée)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 item {
-                    ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor) { selectedChat = PUBLIC }
+                    ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor, null) { selectedChat = PUBLIC }
                 }
                 items(contacts) { contact ->
+                    // Lit profileTick pour se recomposer quand une photo ou un statut arrive
+                    val avatar = remember(contact.id, profileTick) {
+                        ProfileStore.avatarBitmapOf(context, contact.id)
+                    }
                     ChatChip(
                         "@${MeshState.nameOf(contact.id)}",
                         selectedChat == contact.id,
                         peers.any { it.id == contact.id },
                         green,
-                        inkColor
+                        inkColor,
+                        avatar
                     ) { selectedChat = contact.id }
                 }
             }
 
             Spacer(Modifier.height(6.dp))
 
-            // Titre de la conversation, avec la photo et le statut du contact si on les connaît
+            // Titre de la conversation, avec la photo et le statut du contact (mis à jour en direct)
             Text(
                 if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
                 color = grey,
@@ -1438,10 +1466,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 fontFamily = FontFamily.Monospace
             )
             if (selectedChat != PUBLIC) {
-                val contactAvatar = remember(selectedChat, contacts) {
+                val contactAvatar = remember(selectedChat, profileTick) {
                     ProfileStore.avatarBitmapOf(context, selectedChat)
                 }
-                val status = ProfileStore.statusOf(context, selectedChat)
+                val status = remember(selectedChat, profileTick) {
+                    ProfileStore.statusOf(context, selectedChat)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     contactAvatar?.let {
                         Image(
@@ -1474,55 +1504,70 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 } else {
                     LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
                         items(visible) { b ->
+                            // Photo de l'expéditeur, à côté des messages reçus d'un contact
+                            val senderAvatar = if (!b.mine && b.author != "photo" && b.author != "vocal") {
+                                remember(b.author, profileTick) { ProfileStore.avatarBitmapOf(context, b.author) }
+                            } else null
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                 contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
                             ) {
-                                Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
-                                    Column(Modifier.padding(10.dp)) {
-                                        Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        b.image?.let { img ->
-                                            Image(
-                                                bitmap = img.asImageBitmap(),
-                                                contentDescription = "Photo",
-                                                contentScale = ContentScale.Fit,
-                                                modifier = Modifier.size(260.dp)
-                                            )
-                                        }
-                                        b.audio?.let { path ->
-                                            Spacer(Modifier.height(4.dp))
-                                            VoiceBubble(path, green, grey, inkColor)
-                                            Text(
-                                                "⬇ Enregistrer le vocal",
-                                                color = blue,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable {
-                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                }.padding(vertical = 4.dp)
-                                            )
-                                        }
-                                        // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
-                                        b.imagePath?.let { path ->
-                                            Text(
-                                                "⬇ Enregistrer la photo",
-                                                color = blue,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable {
-                                                    val name = saveToDownloads(context, path, "image/jpeg", "photo")
-                                                    log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                }.padding(vertical = 4.dp)
-                                            )
-                                        }
-                                        Text(b.text, color = inkColor, fontSize = 15.sp)
-                                        Text(
-                                            b.time + (b.status?.let { "  $it" } ?: ""),
-                                            color = grey,
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace
+                                Row(verticalAlignment = Alignment.Top) {
+                                    if (senderAvatar != null) {
+                                        Image(
+                                            bitmap = senderAvatar.asImageBitmap(),
+                                            contentDescription = "Photo de l'expéditeur",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.size(28.dp).clip(CircleShape)
                                         )
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
+                                        Column(Modifier.padding(10.dp)) {
+                                            Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                            b.image?.let { img ->
+                                                Image(
+                                                    bitmap = img.asImageBitmap(),
+                                                    contentDescription = "Photo",
+                                                    contentScale = ContentScale.Fit,
+                                                    modifier = Modifier.size(260.dp)
+                                                )
+                                            }
+                                            b.audio?.let { path ->
+                                                Spacer(Modifier.height(4.dp))
+                                                VoiceBubble(path, green, grey, inkColor)
+                                                Text(
+                                                    "⬇ Enregistrer le vocal",
+                                                    color = blue,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.clickable {
+                                                        val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                                        log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                    }.padding(vertical = 4.dp)
+                                                )
+                                            }
+                                            // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
+                                            b.imagePath?.let { path ->
+                                                Text(
+                                                    "⬇ Enregistrer la photo",
+                                                    color = blue,
+                                                    fontSize = 12.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.clickable {
+                                                        val name = saveToDownloads(context, path, "image/jpeg", "photo")
+                                                        log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                    }.padding(vertical = 4.dp)
+                                                )
+                                            }
+                                            Text(b.text, color = inkColor, fontSize = 15.sp)
+                                            Text(
+                                                b.time + (b.status?.let { "  $it" } ?: ""),
+                                                color = grey,
+                                                fontSize = 10.sp,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1537,65 +1582,4 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 color = grey,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
-                maxLines = 3
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            // Aperçu de la photo choisie, avant envoi
-            pendingPhoto?.let { photo ->
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Photo prête : appuyez sur ➤", color = inkColor, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
-                }
-                Spacer(Modifier.height(4.dp))
-            }
-
-            // Barre de saisie arrondie
-            Surface(
-                shape = RoundedCornerShape(28.dp),
-                color = inputBg,
-                border = BorderStroke(1.dp, Color(0xFFD1D5DB)),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
-                ) {
-                    TextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        modifier = Modifier.weight(1f),
-                        placeholder = { Text("écrire un message…", color = grey) },
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                        keyboardActions = KeyboardActions(onSend = { send() }),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = Color.Transparent,
-                            unfocusedContainerColor = Color.Transparent,
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                            focusedTextColor = inkColor,
-                            unfocusedTextColor = inkColor
-                        )
-                    )
-                    CircleButton("📷", lightGrey, inkColor) { showPicker = true }
-                    Spacer(Modifier.width(6.dp))
-                    if (canSend) {
-                        CircleButton("➤", green, Color.White, size = 50.dp) { send() }
-                    } else {
-                        MicButton(
-                            recording = recording || liveHolding,
-                            live = AppState.liveOn,
-                            onTap = { onMicTap() },
-                            onHoldStart = { startLive() },
-                            onHoldEnd = { stopLive() }
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
+                maxLines
