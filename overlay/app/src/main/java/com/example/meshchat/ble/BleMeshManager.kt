@@ -92,6 +92,12 @@ class BleMeshManager(private val context: Context) {
         val expiresAt: Long
     )
 
+    /**
+     * Un message ou fichier gardé, prêt à être (re)envoyé à un téléphone.
+     * [group] vrai : c'est mon propre message pour ce téléphone, on suit son état (« Parti »).
+     */
+    private class Parcel(val id: String, val frames: List<ByteArray>, val group: Boolean)
+
     private val adapter: BluetoothAdapter? = (context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager).adapter
     private val serviceUuid = UUID.fromString("0000ffff-0000-1000-8000-00805f9b34fb")
     private val characteristicUuid = UUID.fromString("0000feee-0000-1000-8000-00805f9b34fb")
@@ -119,11 +125,28 @@ class BleMeshManager(private val context: Context) {
     /** Fichiers privés gardés par ce téléphone, par identifiant de fichier. Protégé par synchronized(holdings). */
     private val holdings = LinkedHashMap<String, Holding>()
 
-    /**
-     * Profil complet (tous ses morceaux) en attente pour chaque contact absent : un seul par contact,
-     * le plus récent remplace l'ancien. Protégé par synchronized(pendingProfiles).
-     */
+    /** Profil complet en attente pour chaque contact absent : un seul par contact. Protégé par synchronized(pendingProfiles). */
     private val pendingProfiles = HashMap<String, List<ByteArray>>()
+
+    /** Accusés que le destinataire n'a pas pu remettre (l'expéditeur n'était pas en vue). Protégé par synchronized(pendingAcks). */
+    private val pendingAcks = HashMap<String, MutableList<ByteArray>>()
+
+    /** Identifiants des messages et fichiers que j'ai envoyés moi-même. */
+    private val ownSent: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Identifiants dont la livraison est confirmée : on ne les renvoie plus. */
+    private val deliveredIds: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** « téléphone:message » déjà transmis par ce relais, pour ne pas le renvoyer plusieurs fois. */
+    private val forwarded: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Dernier essai d'envoi de chaque message, pour espacer les nouveaux essais. */
+    private val lastTry = ConcurrentHashMap<String, Long>()
+
+    /** Messages et fichiers que j'ai reçus : identifiant -> expéditeur. Sert à renvoyer l'accusé si un doublon arrive. */
+    private val receivedFrom = ConcurrentHashMap<String, String>()
+    private val lastAckResend = ConcurrentHashMap<String, Long>()
+    @Volatile private var lastRetryAt = 0L
 
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
 
@@ -145,6 +168,11 @@ class BleMeshManager(private val context: Context) {
         override fun run() {
             if (stopped) return
             sweepPeers()
+            val now = System.currentTimeMillis()
+            if (now - lastRetryAt >= RETRY_TICK_MS) {
+                lastRetryAt = now
+                retryPending()
+            }
             main.postDelayed(this, SWEEP_MS)
         }
     }
@@ -266,16 +294,13 @@ class BleMeshManager(private val context: Context) {
         return MeshStore.boxTagsToCheck(secret)
     }
 
-    /** Étiquette à mettre sur un message envoyé à ce contact : la boîte du jour, calculée avec le secret partagé. */
+    /** Étiquette à mettre sur un message envoyé à ce contact : la boîte du jour. */
     private fun outgoingTagFor(peerId: String): ByteArray? {
         val secret = sharedSecretBytes(peerId) ?: return null
         return MeshStore.boxTag(secret, MeshStore.currentDay())
     }
 
-    /**
-     * Retourne l'identifiant du contact dont une boîte (aujourd'hui ou hier) correspond à l'étiquette reçue,
-     * ou null si aucune boîte ne correspond.
-     */
+    /** Identifiant du contact dont une boîte (aujourd'hui ou hier) correspond à l'étiquette, ou null. */
     private fun contactForTag(tag: ByteArray): String? {
         for (peerId in peerKeys.keys) {
             if (inboxTagsFor(peerId).any { it.contentEquals(tag) }) return peerId
@@ -325,10 +350,7 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /**
-     * Envoie « je pars » aux pairs en vue, dans un fil séparé et avec un délai court.
-     * Best effort : si le Bluetooth est coupé brutalement, rien ne part et le délai de 30 s prend le relais.
-     */
+    /** Envoie « je pars » aux pairs en vue. Best effort : sinon le délai de 30 s prend le relais. */
     private fun sendPeerLeaveNow() {
         val targets = peers.values.toList()
         if (targets.isEmpty()) return
@@ -345,7 +367,7 @@ class BleMeshManager(private val context: Context) {
         emit("Trame « je pars » envoyée à ${targets.size} pair(s)")
     }
 
-    /** Envoie « je suis là » aux téléphones vus récemment, pour qu'ils te remettent en liste tout de suite. */
+    /** Envoie « je suis là » aux téléphones vus récemment. */
     private fun sendPeerHereNow() {
         val now = System.currentTimeMillis()
         lastKnown.entries.removeIf { now - it.value.seenAt > LAST_KNOWN_MS }
@@ -452,12 +474,13 @@ class BleMeshManager(private val context: Context) {
         val targets = peers.values.toList()
         val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(msgId.toHex())
+        ownSent.add(msgId.toHex())
         lastSentId = msgId.toHex()
         val cipher = CryptoEngine.encrypt(bytes, key)
         store.add(msgId, tag, cipher)
         if (targets.isEmpty()) {
             emit("En attente ${msgId.toHex()}")
-            emit("Aucun pair : message privé gardé en attente (10 min)")
+            emit("Aucun pair : message privé gardé en attente")
             return 1
         }
         val frame = byteArrayOf(TYPE_SECRET, RelayConfig.maxRelays(context).toByte()) + msgId + tag + cipher
@@ -553,6 +576,7 @@ class BleMeshManager(private val context: Context) {
 
         val target: String = toPeerId
         val msgId = blobId.toHex()
+        ownSent.add(msgId)
         val destination = peers.entries.filter { peerIds[it.key] == target }.map { it.value }
         val others = peers.entries.filter { peerIds[it.key] != target }.map { it.value }
 
@@ -606,17 +630,68 @@ class BleMeshManager(private val context: Context) {
         if (removed) emit("Livré : copie gardée supprimée ${blobHex.take(8)}")
     }
 
-    /** Fichiers gardés dont l'étiquette correspond à ce contact (aujourd'hui ou hier). */
-    private fun holdingsFor(peerId: String): List<List<ByteArray>> {
-        val tags = inboxTagsFor(peerId)
-        val outTag = outgoingTagFor(peerId)
-        val found = synchronized(holdings) {
-            purgeHoldingsLocked()
-            holdings.values.filter { h -> (outTag != null && h.tag.contentEquals(outTag)) || tags.any { h.tag.contentEquals(it) } }
-                .map { it.frames.toList() }
+    /**
+     * Messages et fichiers gardés à envoyer à ce téléphone.
+     * - ceux qui lui sont destinés (l'étiquette correspond à sa boîte) : toujours à la rencontre,
+     *   et, en mode [retry], seulement si le dernier essai est assez ancien ;
+     * - les autres (que ce téléphone garde comme relais) : transmis une seule fois par téléphone rencontré,
+     *   car un relais ne peut pas savoir à qui ils sont destinés.
+     * Les trames renvoyées ont un TTL de 1 : le téléphone qui les reçoit les garde, sans les propager en chaîne.
+     */
+    private fun parcelsFor(peerId: String, retry: Boolean): List<Parcel> {
+        val tags = inboxTagsFor(peerId) + listOfNotNull(outgoingTagFor(peerId))
+        val now = System.currentTimeMillis()
+        val result = ArrayList<Parcel>()
+        var forwardedCount = 0
+        if (forwarded.size > MAX_SEEN_FRAGMENTS) forwarded.clear()
+
+        // 0 : ignorer, 1 : destiné à ce téléphone, 2 : à transmettre comme relais
+        fun decide(hex: String, tag: ByteArray): Int {
+            if (hex in deliveredIds) return 0
+            if (tags.any { it.contentEquals(tag) }) {
+                if (retry && now - (lastTry[hex] ?: 0L) < RETRY_MIN_MS) return 0
+                lastTry[hex] = now
+                return 1
+            }
+            if (retry || forwardedCount >= MAX_FORWARD_PER_MEETING) return 0
+            if (!forwarded.add("$peerId:$hex")) return 0
+            forwardedCount++
+            return 2
         }
-        if (found.isNotEmpty()) emit("Envoi de ${found.size} fichier(s) gardé(s) à ${peerId.take(8)}")
-        return found
+
+        for (item in store.all()) {
+            val hex = item.id.toHex()
+            val kind = decide(hex, item.tag)
+            if (kind == 0) continue
+            val frame = byteArrayOf(TYPE_SECRET, 1.toByte()) + item.id + item.tag + item.cipher
+            result.add(Parcel(hex, listOf(frame), kind == 1 && hex in ownSent))
+        }
+
+        val snapshot = synchronized(holdings) {
+            purgeHoldingsLocked()
+            holdings.entries.map { Triple(it.key, it.value.tag, it.value.frames.toList()) }
+        }
+        for ((hex, tag, frames) in snapshot) {
+            val kind = decide(hex, tag)
+            if (kind == 0) continue
+            val lowTtl = frames.map { f -> f.copyOf().also { if (it.size > 2) it[1] = 1 } }
+            result.add(Parcel(hex, lowTtl, kind == 1 && hex in ownSent))
+        }
+
+        if (result.isNotEmpty() && !retry) emit("Renvoi de ${result.size} élément(s) gardé(s) à ${peerId.take(8)}")
+        return result
+    }
+
+    /** Nouvel essai pour les messages et fichiers non confirmés, tant que leur destinataire est à portée. */
+    private fun retryPending() {
+        if (!bleOn || stopped || pendingJobs.get() > 0) return
+        val here = peers.entries.toList()
+        for (id in here.mapNotNull { peerIds[it.key] }.distinct()) {
+            if (peerKeys[id] == null) continue
+            val device = here.firstOrNull { peerIds[it.key] == id }?.value ?: continue
+            parcelsFor(id, retry = true).forEach { enqueue(device, it.frames, if (it.group) SendGroup(it.id, 1) else null) }
+            synchronized(pendingAcks) { pendingAcks.remove(id) }?.let { enqueue(device, it) }
+        }
     }
 
     fun markRead(peerId: String) {
@@ -638,6 +713,13 @@ class BleMeshManager(private val context: Context) {
     private fun acceptPrivateBlob(sender: String, plain: ByteArray) {
         if (plain.size <= MeshPacket.ID_SIZE) return
         val blobId = plain.copyOfRange(0, MeshPacket.ID_SIZE)
+        val hex = blobId.toHex()
+        if (receivedFrom.size > MAX_SEEN_FRAGMENTS) receivedFrom.clear()
+        // Déjà reçu : on ne l'affiche pas une seconde fois, mais on renvoie l'accusé
+        if (receivedFrom.putIfAbsent(hex, sender) != null) {
+            resendAck(sender, hex)
+            return
+        }
         val content = plain.copyOfRange(MeshPacket.ID_SIZE, plain.size)
         deliverBlob(content, sender)
         sendAck(sender, blobId, KIND_RECEIVED)
@@ -675,10 +757,7 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /**
-     * Envoie mon profil (statut, version et photo) à chaque contact. Ceux à portée le reçoivent tout de suite ;
-     * les absents gardent une seule version, la plus récente remplace l'ancienne.
-     */
+    /** Envoie mon profil à chaque contact. Les absents gardent une seule version, la plus récente. */
     fun broadcastProfile() {
         val version = ProfileStore.myVersion(context)
         val status = ProfileStore.myStatus(context)
@@ -697,10 +776,7 @@ class BleMeshManager(private val context: Context) {
         emit("Profil envoyé (version $version, ${if (avatar != null) "avec photo" else "sans photo"})")
     }
 
-    /**
-     * Reçoit un morceau de profil. Quand tous les morceaux sont là, le profil est déchiffré et accepté
-     * seulement s'il est plus récent que celui qu'on a déjà.
-     */
+    /** Reçoit un morceau de profil ; accepté seulement s'il est plus récent que celui qu'on a. */
     private fun handleProfilePart(body: ByteArray) {
         val idSize = MeshPacket.ID_SIZE
         val header = idSize + 4 + 2
@@ -732,7 +808,7 @@ class BleMeshManager(private val context: Context) {
         }
     }
 
-    /** Ancien format de profil (statut seul), gardé pour compatibilité avec les anciennes versions. */
+    /** Ancien format de profil (statut seul), gardé pour compatibilité. */
     private fun handleProfile(body: ByteArray) {
         val idSize = MeshPacket.ID_SIZE
         if (body.size <= idSize) return
@@ -937,8 +1013,8 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Un pair est vu (par scan ou par trame « je suis là »). Si c'est une nouvelle rencontre,
-     * on échange les clés, les messages gardés, les profils et les fichiers en attente.
+     * Un pair est vu (par scan ou par trame « je suis là »). Pour une nouvelle rencontre : clé, messages
+     * publics en attente, éléments gardés (suivis par « Parti » s'ils sont à moi), profils et accusés en attente.
      */
     private fun onPeerSeen(device: BluetoothDevice, id: String) {
         val mac = device.address
@@ -951,10 +1027,14 @@ class BleMeshManager(private val context: Context) {
             }
             emit("Pair trouvé : ${(peerNames[id] ?: id).take(8)}")
             publishPeers()
-            val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
-            enqueue(device, frames)
-            holdingsFor(id).forEach { blobFrames -> enqueue(device, blobFrames) }
+
+            val parcels = parcelsFor(id, retry = false)
+            val relayFrames = parcels.filter { !it.group }.flatMap { it.frames }
+            enqueue(device, listOf(keyFrame()) + relayFrames + queuedFrames())
+            parcels.filter { it.group }.forEach { enqueue(device, it.frames, SendGroup(it.id, 1)) }
+
             synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(device, it) }
+            synchronized(pendingAcks) { pendingAcks.remove(id) }?.let { enqueue(device, it) }
         }
     }
 
@@ -1074,8 +1154,8 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Message privé chiffré. Le corps : TTL (1) + identifiant (8) + étiquette de boîte (8) + données chiffrées.
-     * Si l'étiquette correspond à un de nos contacts et que le déchiffrement réussit, il est pour nous.
-     * Sinon, on le garde (étiquette inconnue) et on le relaie avec le fanout.
+     * S'il est pour nous : on l'affiche et on envoie l'accusé. Sinon on le garde et on le relaie.
+     * Un doublon d'un message déjà reçu renvoie l'accusé (le précédent s'est peut-être perdu).
      */
     private fun handleSecret(fromAddress: String, body: ByteArray) {
         val idSize = MeshPacket.ID_SIZE
@@ -1085,13 +1165,19 @@ class BleMeshManager(private val context: Context) {
         val msgId = body.copyOfRange(1, 1 + idSize)
         val tag = body.copyOfRange(1 + idSize, 1 + idSize + tagSize)
         val cipher = body.copyOfRange(1 + idSize + tagSize, body.size)
+        val hex = msgId.toHex()
 
-        if (!seenSecret.add(msgId.toHex())) return
+        if (!seenSecret.add(hex)) {
+            receivedFrom[hex]?.let { resendAck(it, hex) }
+            return
+        }
 
         val opened = openForMe(cipher)
         if (opened != null) {
+            if (receivedFrom.size > MAX_SEEN_FRAGMENTS) receivedFrom.clear()
+            receivedFrom[hex] = opened.first
             emit("Reçu privé de ${opened.first} : ${String(opened.second, Charsets.UTF_8)}")
-            pendingRead.getOrPut(opened.first) { mutableListOf() }.add(msgId.toHex())
+            pendingRead.getOrPut(opened.first) { mutableListOf() }.add(hex)
             sendAck(opened.first, msgId, KIND_RECEIVED)
         } else {
             store.add(msgId, tag, cipher)
@@ -1110,16 +1196,10 @@ class BleMeshManager(private val context: Context) {
         chosen.forEach { sendTo(it, frame) }
     }
 
-    private fun storedFramesFor(peerId: String): List<ByteArray> {
-        val tags = inboxTagsFor(peerId) + listOfNotNull(outgoingTagFor(peerId))
-        val items = tags.flatMap { store.forTag(it) }.distinctBy { it.id.toHex() }
-        if (items.isNotEmpty()) emit("Livraison de ${items.size} message(s) gardé(s) à ${peerId.take(8)}")
-        return items.map { byteArrayOf(TYPE_SECRET, 1.toByte()) + it.id + it.tag + it.cipher }
-    }
-
     /**
      * Accusé chiffré (Reçu ou Lu). Format : ttl (1) + identifiant de l'accusé (8) + identifiant du message
-     * confirmé, en clair (8) + données chiffrées.
+     * confirmé, en clair (8) + données chiffrées. Si l'expéditeur n'est pas en vue, l'accusé est gardé
+     * et remis à la prochaine rencontre.
      */
     private fun sendAck(peerId: String, originalId: ByteArray, kind: Byte) {
         val key = sharedKeyWith(peerId) ?: return
@@ -1127,7 +1207,26 @@ class BleMeshManager(private val context: Context) {
         seenSecret.add(ackId.toHex())
         val cipher = CryptoEngine.encrypt(byteArrayOf(kind) + originalId, key)
         val frame = byteArrayOf(TYPE_ACK, RelayConfig.maxRelays(context).toByte()) + ackId + originalId + cipher
-        peers.values.toList().forEach { sendTo(it, frame) }
+        val here = peers.entries.toList()
+        val hereIds = here.mapNotNull { peerIds[it.key] }.toSet()
+        here.forEach { sendTo(it.value, frame) }
+        if (peerId !in hereIds) keepAck(peerId, frame)
+    }
+
+    private fun keepAck(peerId: String, frame: ByteArray) {
+        synchronized(pendingAcks) {
+            val list = pendingAcks.getOrPut(peerId) { mutableListOf() }
+            list.add(frame)
+            while (list.size > MAX_PENDING_ACKS) list.removeAt(0)
+        }
+    }
+
+    /** Renvoie l'accusé « Reçu » d'un message déjà reçu, au plus une fois toutes les 10 secondes. */
+    private fun resendAck(senderId: String, hex: String) {
+        val now = System.currentTimeMillis()
+        if (now - (lastAckResend[hex] ?: 0L) < ACK_RESEND_MIN_MS) return
+        lastAckResend[hex] = now
+        sendAck(senderId, hex.hexToBytes(), KIND_RECEIVED)
     }
 
     private fun handleAck(fromAddress: String, body: ByteArray) {
@@ -1140,7 +1239,12 @@ class BleMeshManager(private val context: Context) {
         val cipher = body.copyOfRange(header, body.size)
         if (!seenSecret.add(ackId.toHex())) return
 
-        removeHolding(confirmedId.toHex())
+        // Livré : on ne renvoie plus ce message, et les copies gardées ici peuvent disparaître
+        val confirmedHex = confirmedId.toHex()
+        if (deliveredIds.size > MAX_SEEN_FRAGMENTS) deliveredIds.clear()
+        deliveredIds.add(confirmedHex)
+        store.remove(confirmedId)
+        removeHolding(confirmedHex)
 
         val opened = openAck(cipher)
         if (opened != null) {
@@ -1186,6 +1290,16 @@ class BleMeshManager(private val context: Context) {
     ) {
         assemblies.entries.removeIf { it.value.isExpired() }
         val (key, total, part) = MeshChunker.parse(chunk) ?: run { emit("Fragment mal formé"); return }
+
+        // Fichier déjà reçu : on renvoie l'accusé (le précédent s'est peut-être perdu) et on ignore le reste
+        val blobHex = blobId?.toHex()
+        if (blobHex != null) {
+            val already = receivedFrom[blobHex]
+            if (already != null) {
+                resendAck(already, blobHex)
+                return
+            }
+        }
 
         if (!seenFragments.add("$key:${part.first}")) return
         if (seenFragments.size > MAX_SEEN_FRAGMENTS) seenFragments.clear()
@@ -1272,13 +1386,17 @@ class BleMeshManager(private val context: Context) {
         private const val LIVE_PART_BYTES = 200
         private const val LIVE_TIMEOUT_MS = 6_000L
         private const val LIVE_ASSEMBLY_MS = 5_000L
-        /** Délai court pour les trames « je pars » : elles doivent partir avant la coupure. */
+        /** Vérification des messages non confirmés : toutes les 30 secondes. */
+        private const val RETRY_TICK_MS = 30_000L
+        /** Délai minimal entre deux essais pour un même message. */
+        private const val RETRY_MIN_MS = 45_000L
+        /** Nombre maximal d'éléments gardés qu'un relais transmet à un téléphone qu'il rencontre. */
+        private const val MAX_FORWARD_PER_MEETING = 20
+        private const val MAX_PENDING_ACKS = 30
+        private const val ACK_RESEND_MIN_MS = 10_000L
         private const val PEER_NOTICE_TIMEOUT_MS = 2_000L
-        /** Un téléphone vu il y a moins de ce délai reçoit « je suis là » à la réactivation du Bluetooth. */
         private const val LAST_KNOWN_MS = 10 * 60 * 1000L
-        /** Taille d'un morceau de profil, avant l'en-tête de la trame. */
         private const val PROFILE_PART_BYTES = 180
-        /** Délai après lequel un profil incomplet est abandonné. */
         private const val PROFILE_ASSEMBLY_MS = 60_000L
         private const val PRIO_LIVE = 0
         private const val PRIO_NORMAL = 1
@@ -1290,9 +1408,7 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_LIVE: Byte = 6
         private const val TYPE_PROFILE: Byte = 7
         private const val TYPE_PROFILE_PART: Byte = 8
-        /** « Je pars » : le téléphone désactive son Bluetooth. */
         private const val TYPE_PEER_LEAVE: Byte = 9
-        /** « Je suis là » : le téléphone réactive son Bluetooth. */
         private const val TYPE_PEER_HERE: Byte = 10
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
