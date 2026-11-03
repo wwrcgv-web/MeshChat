@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Bundle
@@ -51,6 +52,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
@@ -67,10 +69,12 @@ import com.example.meshchat.service.MeshService
 import com.example.meshchat.wifi.WifiAwareSupport
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.math.abs
 
 /** Enregistre un vocal court (AAC, mono) dans un fichier temporaire du téléphone. */
 class VoiceRecorder(private val context: Context) {
@@ -119,10 +123,7 @@ class VoiceRecorder(private val context: Context) {
         /** Identifie les vocaux joués par l'écran, dans le lecteur commun. */
         private val owner = Any()
 
-        /**
-         * Lance un vocal, ou l'arrête si c'est celui qui joue déjà.
-         * Un seul son à la fois dans l'app : un appui sur un autre vocal coupe le premier.
-         */
+        /** Lance un vocal, ou l'arrête si c'est celui qui joue déjà. */
         fun play(path: String) {
             if (Playback.currentPath == path) {
                 Playback.stop()
@@ -312,104 +313,129 @@ private fun bubbleTitle(b: ChatBubble): String = when {
     else -> "@${MeshState.nameOf(b.author)}"
 }
 
-/** Réduit la photo pour qu'elle tienne dans peu de fragments Bluetooth. */
+/**
+ * Réduit la photo pour l'envoi : 800 px au plus, JPEG qualité 75.
+ * Une photo plus lourde que 250 Ko ne peut pas partir par Bluetooth : elle passe alors par Wi-Fi.
+ */
 private fun compressPhoto(source: Bitmap): ByteArray {
-    val scale = 240f / maxOf(source.width, source.height)
+    val scale = 800f / maxOf(source.width, source.height)
     val small = if (scale < 1f) {
         Bitmap.createScaledBitmap(source, (source.width * scale).toInt().coerceAtLeast(1), (source.height * scale).toInt().coerceAtLeast(1), true)
     } else source
     val out = ByteArrayOutputStream()
-    small.compress(Bitmap.CompressFormat.JPEG, 40, out)
+    small.compress(Bitmap.CompressFormat.JPEG, 75, out)
     return out.toByteArray()
 }
 
 /**
- * Copie un fichier de l'app dans Téléchargements/Samchat, pour qu'il reste visible et utilisable.
- * Retourne le nom du fichier enregistré, ou null en cas d'échec.
+ * Forme d'onde estimée à partir du contenu du fichier audio : [bars] valeurs entre 0.2 et 1.
+ * Ce n'est pas le volume réel de la voix, mais un aperçu visuel stable pour chaque vocal.
  */
-private fun saveToDownloads(context: Context, source: String, mime: String, prefix: String): String? {
-    val src = File(source)
-    if (!src.exists()) return null
-    val ext = src.extension.ifEmpty { "bin" }
-    val name = "${prefix}_${System.currentTimeMillis()}.$ext"
-    return try {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val values = ContentValues().apply {
-                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
-                put(MediaStore.MediaColumns.MIME_TYPE, mime)
-                put(MediaStore.MediaColumns.RELATIVE_PATH, "Download/Samchat")
-            }
-            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return null
-            context.contentResolver.openOutputStream(uri)?.use { out ->
-                src.inputStream().use { input -> input.copyTo(out) }
-            } ?: return null
-        } else {
-            val dir = File(context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS), "Samchat")
-            dir.mkdirs()
-            src.copyTo(File(dir, name), overwrite = true)
-        }
-        name
-    } catch (e: Exception) {
-        null
-    }
-}
-
-/** Informations de distribution de cette copie, affichées dans les outils de debug. */
-private class DistributionInfo(val version: String, val installer: String, val fingerprint: String)
-
-/** Lit la version, l'installateur et l'empreinte SHA-256 du certificat qui a signé cette copie. */
-private fun readDistribution(context: Context): DistributionInfo {
-    val pm = context.packageManager
-    val pkg = context.packageName
-
-    val version = try {
-        @Suppress("DEPRECATION")
-        val info = pm.getPackageInfo(pkg, 0)
-        val code = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) info.longVersionCode else info.versionCode.toLong()
-        "${info.versionName ?: "?"} ($code)"
-    } catch (e: Exception) {
-        "indisponible"
-    }
-
-    val installer = try {
-        val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            pm.getInstallSourceInfo(pkg).installingPackageName
-        } else {
-            @Suppress("DEPRECATION")
-            pm.getInstallerPackageName(pkg)
-        }
-        name ?: "inconnue (installation manuelle)"
-    } catch (e: Exception) {
-        "inconnue"
-    }
-
-    val fingerprint = signingBytes(context)?.let { bytes ->
-        MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
-    } ?: "indisponible"
-
-    return DistributionInfo(version, installer, fingerprint)
-}
-
-/** Certificat qui a signé l'application, en octets. Null si Android ne le fournit pas. */
-@Suppress("DEPRECATION")
-private fun signingBytes(context: Context): ByteArray? = try {
-    val pm = context.packageManager
-    val pkg = context.packageName
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNING_CERTIFICATES)
-        info.signingInfo?.apkContentsSigners?.firstOrNull()?.toByteArray()
+private fun waveformOf(path: String, bars: Int = 40): List<Float> = try {
+    val bytes = File(path).readBytes()
+    if (bytes.isEmpty()) {
+        List(bars) { 0.3f }
     } else {
-        val info = pm.getPackageInfo(pkg, PackageManager.GET_SIGNATURES)
-        info.signatures?.firstOrNull()?.toByteArray()
+        val chunk = maxOf(1, bytes.size / bars)
+        val raw = List(bars) { i ->
+            val from = i * chunk
+            val to = minOf(bytes.size, from + chunk)
+            if (to <= from) 0f else {
+                var sum = 0L
+                for (j in from until to) sum += abs((bytes[j].toInt() and 0xFF) - 128)
+                sum.toFloat() / (to - from)
+            }
+        }
+        val max = raw.maxOrNull()?.takeIf { it > 0f } ?: 1f
+        raw.map { (it / max).coerceIn(0.2f, 1f) }
     }
 } catch (e: Exception) {
-    null
+    List(bars) { 0.3f }
 }
 
-/** Copie un texte dans le presse-papiers du téléphone. */
-private fun copyToClipboard(context: Context, text: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("empreinte", text))
+/** Durée d'un fichier audio, en millisecondes. 0 si elle ne peut pas être lue. */
+private fun durationMsOf(path: String): Long {
+    val retriever = MediaMetadataRetriever()
+    return try {
+        retriever.setDataSource(path)
+        retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+    } catch (e: Exception) {
+        0L
+    } finally {
+        retriever.release()
+    }
+}
+
+/** Affiche une durée au format m:ss. */
+private fun formatMs(ms: Long): String {
+    val s = (ms / 1000).coerceAtLeast(0)
+    return "%d:%02d".format(s / 60, s % 60)
+}
+
+/**
+ * Bulle de vocal, façon WhatsApp : bouton lecture, barres de forme d'onde qui se colorent pendant la lecture,
+ * temps écoulé et durée totale.
+ */
+@Composable
+private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color) {
+    val bars = remember(path) { waveformOf(path) }
+    val total = remember(path) { durationMsOf(path) }
+    val playing = Playback.currentPath == path
+    var elapsed by remember(path) { mutableStateOf(0L) }
+
+    LaunchedEffect(playing) {
+        if (playing) {
+            val started = System.currentTimeMillis()
+            while (Playback.currentPath == path) {
+                elapsed = System.currentTimeMillis() - started
+                if (total > 0 && elapsed > total) elapsed = total
+                delay(100)
+            }
+        } else {
+            elapsed = 0L
+        }
+    }
+
+    val fraction = if (total > 0 && playing) (elapsed.toFloat() / total).coerceIn(0f, 1f) else 0f
+
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(230.dp)) {
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .clip(CircleShape)
+                .background(green)
+                .clickable { VoiceRecorder.play(path) },
+            contentAlignment = Alignment.Center
+        ) {
+            Text(if (playing) "■" else "▶", color = Color.White, fontSize = 14.sp)
+        }
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(28.dp)) {
+                bars.forEachIndexed { i, h ->
+                    val played = (i + 0.5f) / bars.size <= fraction
+                    Box(
+                        modifier = Modifier
+                            .width(3.dp)
+                            .height((6 + 22 * h).dp)
+                            .clip(RoundedCornerShape(2.dp))
+                            .background(if (played) green else grey.copy(alpha = 0.5f))
+                    )
+                    if (i < bars.size - 1) Spacer(Modifier.width(2.dp))
+                }
+            }
+            Row {
+                Text(
+                    if (playing) formatMs(elapsed) else "0:00",
+                    color = grey,
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+                Spacer(Modifier.weight(1f))
+                Text(formatMs(total), color = grey, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+            }
+        }
+    }
 }
 
 /** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
@@ -578,6 +604,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var liveHolding by remember { mutableStateOf(false) }
     var liveStreamer by remember { mutableStateOf<LiveStreamer?>(null) }
     var nameInput by remember { mutableStateOf("") }
+    var statusInput by remember { mutableStateOf("") }
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
@@ -618,6 +645,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         MeshState.refresh()
     }
 
+    /** Enregistre le statut, puis l'envoie à chaque contact. Seulement à l'appui sur le bouton. */
+    fun saveStatus() {
+        ProfileStore.setMyStatus(context, statusInput)
+        BleMeshManager.instance?.broadcastProfile()
+        log("Statut enregistré")
+    }
+
     // Thème : « système » suit le réglage du téléphone
     val dark = when (theme) {
         "clair" -> false
@@ -645,11 +679,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (bitmap != null) pendingPhoto = bitmap
     }
 
-    // Galerie : l'image choisie devient l'aperçu
+    // Galerie : l'image choisie devient l'aperçu, en meilleure qualité qu'avant
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val bitmap = uri?.let {
             context.contentResolver.openInputStream(it)?.use { stream ->
-                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply { inSampleSize = 4 })
+                BitmapFactory.decodeStream(stream, null, BitmapFactory.Options().apply { inSampleSize = 2 })
             }
         }
         if (bitmap != null) pendingPhoto = bitmap
@@ -881,7 +915,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Panneau Debug : compteurs, interrupteurs radio, et distribution de cette copie
+    // Panneau Debug : compteurs, interrupteurs radio, réglages des relais, et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -1028,6 +1062,27 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         ) {
                             Text("Enregistrer", color = Color.White, fontSize = 12.sp)
                         }
+
+                        Spacer(Modifier.height(16.dp))
+                        Text("STATUT (60 caractères)", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(Modifier.height(8.dp))
+                        TextField(
+                            value = statusInput,
+                            onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
+                            singleLine = true,
+                            placeholder = { Text("ton statut", color = grey, fontSize = 12.sp) },
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = { saveStatus() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = green)
+                        ) {
+                            Text("Enregistrer le statut", color = Color.White, fontSize = 12.sp)
+                        }
+                        Text("Envoyé à chaque contact à l'enregistrement.", color = grey, fontSize = 10.sp)
 
                         Spacer(Modifier.height(20.dp))
                         Text("THÈME", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -1228,13 +1283,19 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
             Spacer(Modifier.height(6.dp))
 
-            // Titre de la conversation affichée
+            // Titre de la conversation affichée, avec le statut du contact si on le connaît
             Text(
                 if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
                 color = grey,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace
             )
+            if (selectedChat != PUBLIC) {
+                val status = ProfileStore.statusOf(context, selectedChat)
+                if (status.isNotBlank()) {
+                    Text(status, color = inkColor, fontSize = 11.sp, fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+                }
+            }
 
             // Conversation : message « Aucun appareil détecté » s'il n'y a ni contact ni message, sinon les bulles
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
@@ -1260,20 +1321,28 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                     Column(Modifier.padding(10.dp)) {
                                         Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                         b.image?.let { img ->
-                                            Image(bitmap = img.asImageBitmap(), contentDescription = "Photo", modifier = Modifier.size(200.dp))
-                                        }
-                                        b.audio?.let { path ->
-                                            // Le texte suit le lecteur commun : « Arrêter » sur le vocal qui joue
-                                            val playing = Playback.currentPath == path
-                                            Text(
-                                                if (playing) "■ Arrêter le vocal" else "▶ Écouter le vocal",
-                                                color = green,
-                                                fontSize = 14.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable { VoiceRecorder.play(path) }.padding(vertical = 4.dp)
+                                            Image(
+                                                bitmap = img.asImageBitmap(),
+                                                contentDescription = "Photo",
+                                                contentScale = ContentScale.Fit,
+                                                modifier = Modifier.size(260.dp)
                                             )
                                         }
-                                        // Bouton de téléchargement : copie la photo ou le vocal dans Téléchargements/Samchat
+                                        b.audio?.let { path ->
+                                            Spacer(Modifier.height(4.dp))
+                                            VoiceBubble(path, green, grey, inkColor)
+                                            Text(
+                                                "⬇ Enregistrer le vocal",
+                                                color = blue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable {
+                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
                                         b.imagePath?.let { path ->
                                             Text(
                                                 "⬇ Enregistrer la photo",
@@ -1283,18 +1352,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                                 modifier = Modifier.clickable {
                                                     val name = saveToDownloads(context, path, "image/jpeg", "photo")
                                                     log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                }.padding(vertical = 4.dp)
-                                            )
-                                        }
-                                        b.audio?.let { path ->
-                                            Text(
-                                                "⬇ Enregistrer le vocal",
-                                                color = blue,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable {
-                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
                                                 }.padding(vertical = 4.dp)
                                             )
                                         }
