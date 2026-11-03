@@ -247,6 +247,8 @@ class MainActivity : ComponentActivity() {
                 onRestart = { restartMeshService() }
             )
         }
+        // Le service démarre tout seul à l'ouverture, s'il ne tourne pas déjà
+        if (BleMeshManager.instance == null) askPermissions()
     }
 
     override fun onResume() {
@@ -562,7 +564,7 @@ private fun MenuIcon(color: Color, iconSize: Dp = 20.dp) {
     }
 }
 
-/** Une ligne avec un interrupteur, pour la section RADIOS du panneau de debug. */
+/** Une ligne avec un interrupteur, pour la catégorie Connexion des paramètres. */
 @Composable
 private fun RadioRow(
     title: String,
@@ -570,15 +572,17 @@ private fun RadioRow(
     checked: Boolean,
     enabled: Boolean,
     color: Color,
+    ink: Color,
+    grey: Color,
     onChange: (Boolean) -> Unit
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)
     ) {
-        Column(Modifier.weight(1f)) {
-            Text(title, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            Text(note, fontSize = 11.sp, color = Color(0xFF9CA3AF))
+        Column(Modifier.weight(1f).padding(end = 8.dp)) {
+            Text(title, color = ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text(note, fontSize = 11.sp, color = grey)
         }
         Switch(
             checked = checked,
@@ -586,6 +590,61 @@ private fun RadioRow(
             enabled = enabled,
             colors = SwitchDefaults.colors(checkedTrackColor = color)
         )
+    }
+}
+
+/**
+ * Carte repliable des paramètres : coins arrondis, icône, titre, courte explication.
+ * Le contenu n'apparaît que lorsque la carte est ouverte.
+ */
+@Composable
+private fun SettingsCard(
+    icon: String,
+    title: String,
+    hint: String,
+    open: Boolean,
+    accent: Color,
+    cardBg: Color,
+    ink: Color,
+    grey: Color,
+    onToggle: () -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        shape = RoundedCornerShape(16.dp),
+        color = cardBg,
+        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
+        shadowElevation = 1.dp
+    ) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(14.dp)
+            ) {
+                Box(
+                    modifier = Modifier.size(38.dp).clip(CircleShape).background(accent.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(icon, fontSize = 17.sp)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(title, color = ink, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(hint, color = grey, fontSize = 11.sp)
+                }
+                Text(if (open) "▲" else "▼", color = grey, fontSize = 12.sp)
+            }
+            if (open) {
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
+                    content = content
+                )
+            }
+        }
     }
 }
 
@@ -708,8 +767,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var selectedChat by remember { mutableStateOf(PUBLIC) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
+    /** Carte ouverte dans les paramètres : 0 = aucune, sinon le numéro de la catégorie (1 à 8). */
+    var openSection by remember { mutableStateOf(0) }
     var showDebug by remember { mutableStateOf(false) }
     var showMyQr by remember { mutableStateOf(false) }
+    /** Message dont la suppression est demandée (appui long sur la bulle). */
+    var bubbleToDelete by remember { mutableStateOf<ChatBubble?>(null) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
     var liveHolding by remember { mutableStateOf(false) }
@@ -797,7 +860,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val blue = if (dark) Color(0xFF93C5FD) else Color(0xFF2563EB)
     val orange = Color(0xFFF59E0B)
     val grey = Color(0xFF9CA3AF)
-    val bgColor = if (dark) Color(0xFF09090B) else Color.White
+    val bgColor = if (dark) Color(0xFF09090B) else Color(0xFFF6F7F6)
+    val cardBg = if (dark) Color(0xFF1F2937) else Color.White
     val inkColor = if (dark) Color.White else Color(0xFF111827)
     val mineBg = if (dark) Color(0xFF14532D) else Color(0xFFDCFCE7)
     val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
@@ -1012,6 +1076,27 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
+    // Suppression d'un message, après un appui long (comme WhatsApp)
+    bubbleToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { bubbleToDelete = null },
+            title = { Text("Supprimer ce message ?") },
+            text = { Text("Le message sera retiré de cet écran. Il ne sera pas supprimé chez les autres.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    MeshState.bubbles.remove(target)
+                    target.audio?.let { File(it).delete() }
+                    target.imagePath?.let { File(it).delete() }
+                    bubbleToDelete = null
+                    log("Message supprimé")
+                }) { Text("Supprimer", color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { bubbleToDelete = null }) { Text("Annuler") }
+            }
+        )
+    }
+
     // Mon QR code : l'autre personne le scanne pour t'ajouter
     if (showMyQr) {
         AlertDialog(
@@ -1050,7 +1135,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Panneau Debug : compteurs, interrupteurs radio, réglages des relais, et distribution de cette copie
+    // Outils de debug : compteurs et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
@@ -1079,60 +1164,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     Text("Échecs : ${c("fail")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
 
                     Spacer(Modifier.height(14.dp))
-                    Text("RADIOS", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    RadioRow(
-                        title = "Bluetooth BLE",
-                        note = "Annonce, recherche et messages par Bluetooth. Coupé : les contacts et les clés restent.",
-                        checked = radioBle,
-                        enabled = true,
-                        color = green,
-                        onChange = { on ->
-                            radioBle = on
-                            prefs.edit().putBoolean("radio_ble", on).apply()
-                            BleMeshManager.instance?.setBleEnabled(on)
-                        }
-                    )
-                    RadioRow(
-                        title = "Wi-Fi Aware",
-                        note = if (wifiAwareSupported) "Gros fichiers entre voisins directs." else "Non supporté par ce téléphone.",
-                        checked = radioWifiAware,
-                        enabled = wifiAwareSupported,
-                        color = green,
-                        onChange = { on ->
-                            radioWifiAware = on
-                            prefs.edit().putBoolean("radio_wifi_aware", on).apply()
-                            MeshService.instance?.setWifiAwareEnabled(on)
-                        }
-                    )
-                    RadioRow(
-                        title = "Wi-Fi Direct",
-                        note = "Gros fichiers privés, avec invitation à accepter sur l'autre téléphone.",
-                        checked = radioWifiDirect,
-                        enabled = true,
-                        color = green,
-                        onChange = { on ->
-                            radioWifiDirect = on
-                            prefs.edit().putBoolean("radio_wifi_direct", on).apply()
-                            MeshService.instance?.setWifiDirectEnabled(on)
-                        }
-                    )
-                    RadioRow(
-                        title = "Bluetooth LE Long Range",
-                        note = if (longRangeSupported) {
-                            "Plus loin, mais plus lent. Actif seulement si l'autre téléphone le supporte aussi."
-                        } else {
-                            "Non supporté par ce téléphone."
-                        },
-                        checked = radioLongRange,
-                        enabled = longRangeSupported,
-                        color = green,
-                        onChange = { on ->
-                            radioLongRange = on
-                            prefs.edit().putBoolean("radio_long_range", on).apply()
-                        }
-                    )
-
-                    Spacer(Modifier.height(14.dp))
                     Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("Version : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     Text("Installée depuis : ${dist.installer}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
@@ -1159,8 +1190,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Paramètres : panneau à droite de l'écran
+    // Paramètres : panneau latéral défilable, organisé en catégories repliables
     if (showSettings) {
+        val myIdText = BleMeshManager.instance?.myId?.joinToString("") { "%02x".format(it) }?.take(16) ?: "—"
         Dialog(
             onDismissRequest = { showSettings = false },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1168,203 +1200,420 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             Row(Modifier.fillMaxSize().background(Color(0x99000000))) {
                 Box(Modifier.weight(1f).fillMaxHeight().clickable { showSettings = false })
                 Surface(
-                    modifier = Modifier.width(300.dp).fillMaxHeight(),
+                    modifier = Modifier.fillMaxHeight().fillMaxWidth(0.9f).widthIn(max = 360.dp),
                     color = bgColor
                 ) {
-                    Column(Modifier.fillMaxSize().padding(20.dp).verticalScroll(rememberScrollState())) {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Text("PARAMÈTRES", color = green, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
+                    Column(Modifier.fillMaxSize()) {
+                        // En-tête du panneau
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 6.dp)
+                        ) {
+                            Text(
+                                "Paramètres",
+                                color = green,
+                                fontSize = 20.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
                             TextButton(onClick = { showSettings = false }) { Text("✕", fontSize = 18.sp, color = inkColor) }
                         }
 
-                        Spacer(Modifier.height(20.dp))
-                        Text("NOM D'UTILISATEUR", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = nameInput,
-                            onValueChange = { nameInput = it.take(20) },
-                            singleLine = true,
-                            placeholder = { Text("votre nom", color = grey, fontSize = 12.sp) },
-                            textStyle = TextStyle(fontSize = 13.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = { saveName(nameInput) },
-                            enabled = nameInput.isNotBlank(),
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = green)
-                        ) {
-                            Text("Enregistrer", color = Color.White, fontSize = 12.sp)
-                        }
-
-                        // Photo de profil : aperçu, puis choix dans la galerie
-                        Spacer(Modifier.height(16.dp))
-                        Text("PHOTO DE PROFIL", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            val avatarPreview = myAvatar
-                            if (avatarPreview != null) {
-                                Image(
-                                    bitmap = avatarPreview.asImageBitmap(),
-                                    contentDescription = "Ma photo de profil",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier.size(56.dp).clip(CircleShape)
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier.size(56.dp).clip(CircleShape).background(lightGrey),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text("?", color = grey, fontSize = 18.sp)
-                                }
-                            }
-                            Spacer(Modifier.width(12.dp))
-                            Button(
-                                onClick = { avatarLauncher.launch("image/*") },
-                                colors = ButtonDefaults.buttonColors(containerColor = green)
-                            ) {
-                                Text("Choisir", color = Color.White, fontSize = 12.sp)
-                            }
-                        }
-                        Text("Recadrée en carré, envoyée à chaque contact.", color = grey, fontSize = 10.sp)
-
-                        Spacer(Modifier.height(16.dp))
-                        Text("STATUT (60 caractères)", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = statusInput,
-                            onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
-                            singleLine = true,
-                            placeholder = { Text("ton statut", color = grey, fontSize = 12.sp) },
-                            textStyle = TextStyle(fontSize = 13.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = { saveStatus() },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = green)
-                        ) {
-                            Text("Enregistrer le statut", color = Color.White, fontSize = 12.sp)
-                        }
-                        Text("Envoyé à chaque contact à l'enregistrement.", color = grey, fontSize = 10.sp)
-
-                        Spacer(Modifier.height(20.dp))
-                        Text("THÈME", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        listOf("système", "clair", "sombre").forEach { option ->
-                            Button(
-                                onClick = { theme = option },
-                                modifier = Modifier.fillMaxWidth(),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = if (theme == option) green else lightGrey
-                                )
-                            ) {
-                                Text(option, color = if (theme == option) Color.White else inkColor, fontSize = 12.sp)
-                            }
-                            Spacer(Modifier.height(6.dp))
-                        }
-
-                        Spacer(Modifier.height(16.dp))
-                        Text("RÉGLAGES", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Text("Rester actif en arrière-plan", color = inkColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text("Si désactivé, le service s'arrête quand l'app est quittée", color = grey, fontSize = 10.sp)
-                        Spacer(Modifier.height(6.dp))
-                        Switch(
-                            checked = AppState.runInBackground,
-                            onCheckedChange = { AppState.runInBackground = it },
-                            colors = SwitchDefaults.colors(checkedTrackColor = green)
-                        )
-
-                        Spacer(Modifier.height(16.dp))
-                        Text("Live push-to-talk", color = inkColor, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            "Maintenir le micro pour parler en direct à un contact à portée. Un appui bref envoie toujours un vocal.",
-                            color = grey,
-                            fontSize = 10.sp
-                        )
-                        Spacer(Modifier.height(6.dp))
-                        Switch(
-                            checked = AppState.liveOn,
-                            onCheckedChange = { on ->
-                                AppState.liveOn = on
-                                prefs.edit().putBoolean("live_on", on).apply()
-                            },
-                            colors = SwitchDefaults.colors(checkedTrackColor = green)
-                        )
-
-                        // Relais : nombre maximum de sauts, fanout, et durée de conservation
-                        Spacer(Modifier.height(16.dp))
-                        RelaySettings(context, green, grey, inkColor)
-
-                        // Contacts par QR code : afficher le sien, ou scanner celui d'une autre personne
-                        Spacer(Modifier.height(16.dp))
-                        Text("CONTACTS PAR QR CODE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = { showSettings = false; showMyQr = true },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = green)
-                        ) {
-                            Text("Mon QR code", color = Color.White, fontSize = 12.sp)
-                        }
-                        Spacer(Modifier.height(6.dp))
-                        Button(
-                            onClick = { showSettings = false; startScan() },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = green)
-                        ) {
-                            Text("Scanner un QR code", color = Color.White, fontSize = 12.sp)
-                        }
-                        Text(
-                            "Scanne le QR de quelqu'un pour l'ajouter, même s'il est loin.",
-                            color = grey,
-                            fontSize = 10.sp
-                        )
-
-                        // Partage de l'application, par le menu Android (Bluetooth, Nearby Share, etc.)
-                        Spacer(Modifier.height(16.dp))
-                        Text("PARTAGER", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Button(
-                            onClick = {
-                                if (!ShareApp.share(context)) log("Partage impossible")
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = blue)
-                        ) {
-                            Text("Partager Samchat", color = Color.White, fontSize = 12.sp)
-                        }
-                        Text(
-                            "Envoie l'application par Bluetooth ou Nearby Share, sans internet.",
-                            color = grey,
-                            fontSize = 10.sp
-                        )
-
-                        Spacer(Modifier.height(16.dp))
-                        Text("LANGUE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Spacer(Modifier.height(8.dp))
-                        Text("Français", color = inkColor, fontSize = 12.sp)
-                        Text("(d'autres langues viendront plus tard)", color = grey, fontSize = 10.sp)
-
-                        // Outils de debug, en bas du panneau
-                        Spacer(Modifier.height(16.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
+                        Column(
+                            Modifier
+                                .weight(1f)
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    showSettings = false
-                                    showDebug = true
-                                }
-                                .padding(vertical = 10.dp)
+                                .verticalScroll(rememberScrollState())
+                                .padding(horizontal = 12.dp)
+                                .padding(bottom = 24.dp)
                         ) {
-                            BugIcon(orange, 22.dp)
-                            Spacer(Modifier.width(10.dp))
-                            Text("outils de debug", color = inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                            // 1. Mon profil
+                            SettingsCard(
+                                icon = "👤",
+                                title = "Mon profil",
+                                hint = "Photo, nom d'utilisateur, identifiant et statut.",
+                                open = openSection == 1,
+                                accent = green,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = {
+                                    nameInput = myName
+                                    statusInput = ProfileStore.myStatus(context)
+                                    openSection = if (openSection == 1) 0 else 1
+                                }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                                    val avatarPreview = myAvatar
+                                    if (avatarPreview != null) {
+                                        Image(
+                                            bitmap = avatarPreview.asImageBitmap(),
+                                            contentDescription = "Ma photo de profil",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier.size(60.dp).clip(CircleShape)
+                                        )
+                                    } else {
+                                        Box(
+                                            modifier = Modifier.size(60.dp).clip(CircleShape).background(lightGrey),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("?", color = grey, fontSize = 18.sp)
+                                        }
+                                    }
+                                    Spacer(Modifier.width(12.dp))
+                                    Button(
+                                        onClick = { avatarLauncher.launch("image/*") },
+                                        colors = ButtonDefaults.buttonColors(containerColor = green)
+                                    ) {
+                                        Text("Changer la photo", color = Color.White, fontSize = 12.sp)
+                                    }
+                                }
+                                Text("Recadrée en carré, envoyée à chaque contact.", color = grey, fontSize = 11.sp)
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("NOM D'UTILISATEUR", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                TextField(
+                                    value = nameInput,
+                                    onValueChange = { nameInput = it.take(20) },
+                                    singleLine = true,
+                                    placeholder = { Text("votre nom", color = grey, fontSize = 12.sp) },
+                                    textStyle = TextStyle(fontSize = 14.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { saveName(nameInput) },
+                                    enabled = nameInput.isNotBlank(),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = green)
+                                ) {
+                                    Text("Enregistrer le nom", color = Color.White, fontSize = 13.sp)
+                                }
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("IDENTIFIANT", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(myIdText, color = inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                                Text("Un code technique qui identifie ton téléphone.", color = grey, fontSize = 11.sp)
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("STATUT (60 caractères)", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                TextField(
+                                    value = statusInput,
+                                    onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
+                                    singleLine = true,
+                                    placeholder = { Text("ton statut", color = grey, fontSize = 12.sp) },
+                                    textStyle = TextStyle(fontSize = 14.sp),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { saveStatus() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = green)
+                                ) {
+                                    Text("Enregistrer le statut", color = Color.White, fontSize = 13.sp)
+                                }
+                                Text("Envoyé à chaque contact à l'enregistrement.", color = grey, fontSize = 11.sp)
+                            }
+
+                            // 2. Apparence
+                            SettingsCard(
+                                icon = "🎨",
+                                title = "Apparence",
+                                hint = "Thème clair, sombre ou automatique.",
+                                open = openSection == 2,
+                                accent = blue,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 2) 0 else 2 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                listOf("système", "clair", "sombre").forEach { option ->
+                                    Button(
+                                        onClick = { theme = option },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (theme == option) green else lightGrey
+                                        )
+                                    ) {
+                                        Text(
+                                            when (option) {
+                                                "clair" -> "Clair"
+                                                "sombre" -> "Sombre"
+                                                else -> "Automatique (système)"
+                                            },
+                                            color = if (theme == option) Color.White else inkColor,
+                                            fontSize = 13.sp
+                                        )
+                                    }
+                                    Spacer(Modifier.height(6.dp))
+                                }
+                            }
+
+                            // 3. Connexion
+                            SettingsCard(
+                                icon = "📡",
+                                title = "Connexion",
+                                hint = "Service, Bluetooth, Wi-Fi et Push-to-Talk.",
+                                open = openSection == 3,
+                                accent = blue,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 3) 0 else 3 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                RadioRow(
+                                    title = "Service en arrière-plan",
+                                    note = "Si désactivé, le service s'arrête quand l'app est quittée.",
+                                    checked = AppState.runInBackground,
+                                    enabled = true,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { AppState.runInBackground = it }
+                                )
+                                RadioRow(
+                                    title = "Bluetooth BLE",
+                                    note = "Annonce, recherche et messages par Bluetooth. Coupé : les contacts et les clés restent.",
+                                    checked = radioBle,
+                                    enabled = true,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        radioBle = on
+                                        prefs.edit().putBoolean("radio_ble", on).apply()
+                                        BleMeshManager.instance?.setBleEnabled(on)
+                                    }
+                                )
+                                RadioRow(
+                                    title = "Wi-Fi Aware",
+                                    note = if (wifiAwareSupported) "Gros fichiers entre voisins directs." else "Non supporté par ce téléphone.",
+                                    checked = radioWifiAware,
+                                    enabled = wifiAwareSupported,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        radioWifiAware = on
+                                        prefs.edit().putBoolean("radio_wifi_aware", on).apply()
+                                        MeshService.instance?.setWifiAwareEnabled(on)
+                                    }
+                                )
+                                RadioRow(
+                                    title = "Wi-Fi Direct",
+                                    note = "Gros fichiers privés, avec invitation à accepter sur l'autre téléphone.",
+                                    checked = radioWifiDirect,
+                                    enabled = true,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        radioWifiDirect = on
+                                        prefs.edit().putBoolean("radio_wifi_direct", on).apply()
+                                        MeshService.instance?.setWifiDirectEnabled(on)
+                                    }
+                                )
+                                RadioRow(
+                                    title = "Bluetooth LE Long Range",
+                                    note = if (longRangeSupported) {
+                                        "Plus loin, mais plus lent. Actif seulement si l'autre téléphone le supporte aussi."
+                                    } else {
+                                        "Non supporté par ce téléphone."
+                                    },
+                                    checked = radioLongRange,
+                                    enabled = longRangeSupported,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        radioLongRange = on
+                                        prefs.edit().putBoolean("radio_long_range", on).apply()
+                                    }
+                                )
+                                RadioRow(
+                                    title = "Live Push-to-Talk",
+                                    note = "Maintenir le micro pour parler en direct à un contact à portée. Un appui bref envoie toujours un vocal.",
+                                    checked = AppState.liveOn,
+                                    enabled = true,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        AppState.liveOn = on
+                                        prefs.edit().putBoolean("live_on", on).apply()
+                                    }
+                                )
+                            }
+
+                            // 4. Réseau et relais
+                            SettingsCard(
+                                icon = "🔁",
+                                title = "Réseau et relais",
+                                hint = "Relais maximum, voisins par relais, conservation.",
+                                open = openSection == 4,
+                                accent = green,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 4) 0 else 4 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                RelaySettings(context, green, grey, inkColor)
+                            }
+
+                            // 5. Contacts
+                            SettingsCard(
+                                icon = "👥",
+                                title = "Contacts",
+                                hint = "Mon QR code, scanner un QR code, liste des contacts.",
+                                open = openSection == 5,
+                                accent = green,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 5) 0 else 5 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { showSettings = false; showMyQr = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = green)
+                                ) {
+                                    Text("Mon QR code", color = Color.White, fontSize = 13.sp)
+                                }
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { showSettings = false; startScan() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = green)
+                                ) {
+                                    Text("Scanner un QR code", color = Color.White, fontSize = 13.sp)
+                                }
+                                Text(
+                                    "Scanne le QR de quelqu'un pour l'ajouter, même s'il est loin.",
+                                    color = grey,
+                                    fontSize = 11.sp
+                                )
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("MES CONTACTS (${contacts.size})", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                if (contacts.isEmpty()) {
+                                    Text("Aucun contact pour l'instant.", color = grey, fontSize = 12.sp)
+                                } else {
+                                    contacts.forEach { contact ->
+                                        val online = peers.any { it.id == contact.id }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                                        ) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .size(10.dp)
+                                                    .clip(CircleShape)
+                                                    .background(if (online) green else grey.copy(alpha = 0.5f))
+                                            )
+                                            Spacer(Modifier.width(10.dp))
+                                            Column(Modifier.weight(1f)) {
+                                                Text("@${MeshState.nameOf(contact.id)}", color = inkColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                                                Text(if (online) "À portée" else "Hors de portée", color = grey, fontSize = 11.sp)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 6. Partage
+                            SettingsCard(
+                                icon = "📤",
+                                title = "Partage",
+                                hint = "Envoyer l'application à un proche.",
+                                open = openSection == 6,
+                                accent = blue,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 6) 0 else 6 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                Button(
+                                    onClick = { if (!ShareApp.share(context)) log("Partage impossible") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = blue)
+                                ) {
+                                    Text("Partager Samchat", color = Color.White, fontSize = 13.sp)
+                                }
+                                Text(
+                                    "Envoie l'application par Bluetooth ou Nearby Share, sans internet.",
+                                    color = grey,
+                                    fontSize = 11.sp
+                                )
+                            }
+
+                            // 7. Langue et assistance
+                            SettingsCard(
+                                icon = "🌍",
+                                title = "Langue et assistance",
+                                hint = "Langue, aide et informations sur l'application.",
+                                open = openSection == 7,
+                                accent = orange,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 7) 0 else 7 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                Text("LANGUE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Français", color = inkColor, fontSize = 13.sp)
+                                Text("D'autres langues viendront plus tard.", color = grey, fontSize = 11.sp)
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("AIDE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. " +
+                                        "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer.",
+                                    color = inkColor,
+                                    fontSize = 12.sp
+                                )
+
+                                Spacer(Modifier.height(14.dp))
+                                Text("À PROPOS", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("Samchat, version ${dist.version}", color = inkColor, fontSize = 12.sp)
+                            }
+
+                            // 8. Diagnostic avancé
+                            SettingsCard(
+                                icon = "🛠",
+                                title = "Diagnostic avancé",
+                                hint = "Outils de debug et informations techniques.",
+                                open = openSection == 8,
+                                accent = orange,
+                                cardBg = cardBg,
+                                ink = inkColor,
+                                grey = grey,
+                                onToggle = { openSection = if (openSection == 8) 0 else 8 }
+                            ) {
+                                Spacer(Modifier.height(6.dp))
+                                Text("Version : ${dist.version}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                Text("Installée depuis : ${dist.installer}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                Text("Pairs à portée : ${peers.size}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                Spacer(Modifier.height(10.dp))
+                                Button(
+                                    onClick = { showSettings = false; showDebug = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = orange)
+                                ) {
+                                    BugIcon(Color.White, 18.dp)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Ouvrir les outils de debug", color = Color.White, fontSize = 13.sp)
+                                }
+                            }
                         }
                     }
                 }
@@ -1400,6 +1649,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 TextButton(onClick = {
                     nameInput = myName
                     statusInput = ProfileStore.myStatus(context)
+                    openSection = 0
                     showSettings = true
                 }) {
                     MenuIcon(inkColor, 20.dp)
@@ -1522,7 +1772,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                         )
                                         Spacer(Modifier.width(6.dp))
                                     }
-                                    Surface(color = if (b.mine) mineBg else otherBg, shape = RoundedCornerShape(16.dp)) {
+                                    Surface(
+                                        color = if (b.mine) mineBg else otherBg,
+                                        shape = RoundedCornerShape(16.dp),
+                                        // Appui long : proposer la suppression du message
+                                        modifier = Modifier.pointerInput(b) {
+                                            detectTapGestures(onLongPress = { bubbleToDelete = b })
+                                        }
+                                    ) {
                                         Column(Modifier.padding(10.dp)) {
                                             Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                             b.image?.let { img ->
