@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.example.meshchat.ProfileStore
 import com.example.meshchat.RelayConfig
 import com.example.meshchat.crypto.CryptoEngine
 import java.security.KeyFactory
@@ -103,6 +104,9 @@ class BleMeshManager(private val context: Context) {
 
     /** Fichiers privés gardés par ce téléphone, par identifiant de fichier. Protégé par synchronized(holdings). */
     private val holdings = LinkedHashMap<String, Holding>()
+
+    /** Profil en attente pour chaque contact absent : une seule trame par contact, la plus récente. Protégé par synchronized(pendingProfiles). */
+    private val pendingProfiles = HashMap<String, ByteArray>()
 
     private val prefs = context.getSharedPreferences("meshchat", Context.MODE_PRIVATE)
 
@@ -241,7 +245,6 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Étiquettes de boîte à attendre de ce contact (aujourd'hui et hier). Vide si la clé n'est pas connue.
-     * Ce sont les seules étiquettes qui permettent de reconnaître un message adressé à ce téléphone.
      */
     private fun inboxTagsFor(peerId: String): List<ByteArray> {
         val secret = sharedSecretBytes(peerId) ?: return emptyList()
@@ -255,8 +258,8 @@ class BleMeshManager(private val context: Context) {
     }
 
     /**
-     * Vrai si l'étiquette reçue correspond à une boîte de l'un de nos contacts (aujourd'hui ou hier).
-     * Retourne l'identifiant de ce contact, ou null si aucune boîte ne correspond.
+     * Retourne l'identifiant du contact dont une boîte (aujourd'hui ou hier) correspond à l'étiquette reçue,
+     * ou null si aucune boîte ne correspond.
      */
     private fun contactForTag(tag: ByteArray): String? {
         for (peerId in peerKeys.keys) {
@@ -264,9 +267,6 @@ class BleMeshManager(private val context: Context) {
         }
         return null
     }
-
-    /** Vrai si l'étiquette est celle de ce téléphone (boîte du jour ou d'hier). */
-    private fun isForMe(tag: ByteArray): Boolean = contactForTag(tag) == null && false
 
     private fun openForMe(cipher: ByteArray): Pair<String, ByteArray>? {
         for (entry in peerKeys.entries) {
@@ -604,6 +604,51 @@ class BleMeshManager(private val context: Context) {
             CryptoEngine.encodePublic(keyPair.public)
     }
 
+    /**
+     * Profil d'un contact, chiffré avec le secret partagé. Trame : type (1) + identifiant de l'expéditeur (8)
+     * + données chiffrées. Le contenu clair est (version, statut), décodé par ProfileStore.
+     */
+    private fun profileFrame(peerId: String, plain: ByteArray): ByteArray? {
+        val key = sharedKeyWith(peerId) ?: return null
+        val cipher = CryptoEngine.encrypt(plain, key)
+        return byteArrayOf(TYPE_PROFILE) + myId + cipher
+    }
+
+    /**
+     * Envoie mon profil (statut et version) à chaque contact. Ceux à portée le reçoivent tout de suite ;
+     * les absents gardent une seule version, la plus récente remplace l'ancienne.
+     * À appeler à chaque enregistrement du statut.
+     */
+    fun broadcastProfile() {
+        val version = ProfileStore.myVersion(context)
+        val status = ProfileStore.myStatus(context)
+        val plain = ProfileStore.encode(version, status)
+        val nowHere = peers.entries.toList()
+        for (peerId in peerKeys.keys) {
+            val frame = profileFrame(peerId, plain) ?: continue
+            val device = nowHere.firstOrNull { peerIds[it.key] == peerId }?.value
+            if (device != null) {
+                enqueue(device, listOf(frame))
+            } else {
+                synchronized(pendingProfiles) { pendingProfiles[peerId] = frame }
+            }
+        }
+        emit("Profil envoyé (version $version)")
+    }
+
+    /** Reçoit un profil : accepté seulement s'il est plus récent que celui qu'on a déjà. */
+    private fun handleProfile(fromAddress: String, body: ByteArray) {
+        val idSize = MeshPacket.ID_SIZE
+        if (body.size <= idSize) return
+        val senderId = body.copyOfRange(0, idSize).toHex()
+        val key = sharedKeyWith(senderId) ?: return
+        val plain = CryptoEngine.decrypt(body.copyOfRange(idSize, body.size), key) ?: return
+        val decoded = ProfileStore.decode(plain) ?: return
+        if (ProfileStore.acceptFromPeer(context, senderId, decoded.first, decoded.second)) {
+            emit("Profil reçu de ${senderId.take(8)} (version ${decoded.first})")
+        }
+    }
+
     private fun sendTo(device: BluetoothDevice, frame: ByteArray) = enqueue(device, listOf(frame))
 
     private fun enqueue(device: BluetoothDevice, frames: List<ByteArray>, group: SendGroup? = null) {
@@ -773,6 +818,7 @@ class BleMeshManager(private val context: Context) {
                     val frames = listOf(keyFrame()) + storedFramesFor(id) + queuedFrames()
                     enqueue(r.device, frames)
                     holdingsFor(id).forEach { blobFrames -> enqueue(r.device, blobFrames) }
+                    synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(r.device, listOf(it)) }
                 }
             }
         }
@@ -804,6 +850,7 @@ class BleMeshManager(private val context: Context) {
             TYPE_SECRET -> handleSecret(fromAddress, value.copyOfRange(1, value.size))
             TYPE_ACK -> handleAck(fromAddress, value.copyOfRange(1, value.size))
             TYPE_LIVE -> handleLive(value.copyOfRange(1, value.size))
+            TYPE_PROFILE -> handleProfile(fromAddress, value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -1094,6 +1141,7 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_SECRET: Byte = 4
         private const val TYPE_ACK: Byte = 5
         private const val TYPE_LIVE: Byte = 6
+        private const val TYPE_PROFILE: Byte = 7
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
