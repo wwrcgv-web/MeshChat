@@ -1582,4 +1582,65 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 color = grey,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
-                maxLines
+                maxLines = 3
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            // Aperçu de la photo choisie, avant envoi
+            pendingPhoto?.let { photo ->
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("Photo prête : appuyez sur ➤", color = inkColor, fontSize = 12.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
+                }
+                Spacer(Modifier.height(4.dp))
+            }
+
+            // Barre de saisie arrondie
+            Surface(
+                shape = RoundedCornerShape(28.dp),
+                color = inputBg,
+                border = BorderStroke(1.dp, Color(0xFFD1D5DB)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                ) {
+                    TextField(
+                        value = draft,
+                        onValueChange = { draft = it },
+                        modifier = Modifier.weight(1f),
+                        placeholder = { Text("écrire un message…", color = grey) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(onSend = { send() }),
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = Color.Transparent,
+                            unfocusedContainerColor = Color.Transparent,
+                            focusedIndicatorColor = Color.Transparent,
+                            unfocusedIndicatorColor = Color.Transparent,
+                            focusedTextColor = inkColor,
+                            unfocusedTextColor = inkColor
+                        )
+                    )
+                    CircleButton("📷", lightGrey, inkColor) { showPicker = true }
+                    Spacer(Modifier.width(6.dp))
+                    if (canSend) {
+                        CircleButton("➤", green, Color.White, size = 50.dp) { send() }
+                    } else {
+                        MicButton(
+                            recording = recording || liveHolding,
+                            live = AppState.liveOn,
+                            onTap = { onMicTap() },
+                            onHoldStart = { startLive() },
+                            onHoldEnd = { stopLive() }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
