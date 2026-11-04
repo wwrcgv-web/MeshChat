@@ -402,7 +402,7 @@ private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color
 
     val fraction = if (total > 0 && playing) (elapsed.toFloat() / total).coerceIn(0f, 1f) else 0f
 
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(230.dp)) {
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(220.dp)) {
         Box(
             modifier = Modifier
                 .size(36.dp)
@@ -438,6 +438,28 @@ private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color
                 Spacer(Modifier.weight(1f))
                 Text(formatMs(total), color = grey, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
             }
+        }
+    }
+}
+
+/**
+ * Photo de profil ronde. Sans photo : un rond gris avec une lettre (ou « ? » si l'auteur est inconnu).
+ */
+@Composable
+private fun AvatarDot(bitmap: Bitmap?, label: String, size: Dp, bg: Color, ink: Color) {
+    if (bitmap != null) {
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = "Photo de profil",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(size).clip(CircleShape)
+        )
+    } else {
+        Box(
+            modifier = Modifier.size(size).clip(CircleShape).background(bg),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(label, color = ink, fontSize = (size.value * 0.45f).sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -779,6 +801,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var liveStreamer by remember { mutableStateOf<LiveStreamer?>(null) }
     var nameInput by remember { mutableStateOf("") }
     var statusInput by remember { mutableStateOf("") }
+
+    // Groupes : fenêtre de création ou de gestion, et confirmation pour quitter
+    var showGroupDialog by remember { mutableStateOf(false) }
+    var editingGroupId by remember { mutableStateOf<String?>(null) }
+    var groupNameInput by remember { mutableStateOf("") }
+    var groupMembers by remember { mutableStateOf(setOf<String>()) }
+    var groupAdmins by remember { mutableStateOf(setOf<String>()) }
+    var showLeave by remember { mutableStateOf(false) }
+
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
@@ -809,8 +840,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val counts = MeshState.counts
     val displayName = if (myName.isNotBlank()) myName else pseudo
 
-    // Rafraîchissement : ce compteur change dès qu'un profil de contact est accepté
+    // Rafraîchissement : ces compteurs changent quand un profil ou la liste des groupes change
     val profileTick = MeshState.profileTick
+    val groupsTick = MeshState.groupsTick
+    val groups = remember(groupsTick) { GroupStore.all(context) }
 
     fun log(line: String) = MeshState.addJournal(line)
 
@@ -868,9 +901,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
 
+    val inGroup = MeshState.isGroupChat(selectedChat)
+    val currentGroup = if (inGroup) groups.firstOrNull { it.id == MeshState.groupIdOf(selectedChat) } else null
+
     // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
     LaunchedEffect(selectedChat) {
-        if (selectedChat != PUBLIC) BleMeshManager.instance?.markRead(selectedChat)
+        if (selectedChat != PUBLIC && !MeshState.isGroupChat(selectedChat)) BleMeshManager.instance?.markRead(selectedChat)
     }
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
@@ -878,7 +914,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (bitmap != null) pendingPhoto = bitmap
     }
 
-    // Galerie : l'image choisie devient l'aperçu, en meilleure qualité qu'avant
+    // Galerie : l'image choisie devient l'aperçu
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val bitmap = uri?.let {
             context.contentResolver.openInputStream(it)?.use { stream ->
@@ -895,11 +931,83 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    /** Envoie le texte et/ou la photo (au téléphone choisi, ou à tous). */
+    /** Ouvre la fenêtre de création d'un groupe. */
+    fun openNewGroup() {
+        editingGroupId = null
+        groupNameInput = ""
+        groupMembers = emptySet()
+        groupAdmins = emptySet()
+        showGroupDialog = true
+    }
+
+    /** Ouvre la fenêtre de gestion d'un groupe (administrateurs seulement). */
+    fun openEditGroup(g: GroupStore.Group) {
+        val me = BleMeshManager.instance?.myIdHex ?: return
+        editingGroupId = g.id
+        groupNameInput = g.name
+        groupMembers = g.members.filter { it != me }.toSet()
+        groupAdmins = g.admins.filter { it != me }.toSet()
+        showGroupDialog = true
+    }
+
+    /** Enregistre le groupe (création ou modification) puis l'envoie aux membres. */
+    fun saveGroup() {
+        val manager = BleMeshManager.instance
+        if (manager == null) {
+            log("Service non activé : activez le service")
+            return
+        }
+        val me = manager.myIdHex
+        val others = groupMembers.filter { it != me }
+        val admins = groupAdmins.filter { it != me && it in groupMembers }
+        val editing = editingGroupId
+        if (editing == null) {
+            val created = GroupStore.create(context, groupNameInput, me, others)
+            if (created == null) {
+                log("Groupe impossible : nom vide ou plus de ${GroupStore.MAX_MEMBERS} membres")
+                return
+            }
+            val finalGroup = if (admins.isNotEmpty()) {
+                GroupStore.edit(context, created.id, me, created.name, others, admins) ?: created
+            } else created
+            manager.publishGroup(finalGroup)
+            selectedChat = MeshState.groupChat(finalGroup.id)
+        } else {
+            val old = GroupStore.get(context, editing)
+            val updated = GroupStore.edit(context, editing, me, groupNameInput, others, admins)
+            if (updated == null) {
+                log("Modification refusée : nom vide, trop de membres ou tu n'es pas administrateur")
+                return
+            }
+            manager.publishGroup(updated, old?.members ?: emptyList())
+        }
+        MeshState.notifyGroupsChanged()
+        showGroupDialog = false
+    }
+
+    /** Envoie le texte et/ou la photo (au téléphone choisi, à tous, ou au groupe choisi). */
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
             log("Service non activé : activez le service")
+            return
+        }
+        if (MeshState.isGroupChat(selectedChat)) {
+            val gid = MeshState.groupIdOf(selectedChat)
+            if (draft.isNotBlank()) {
+                val sent = manager.sendGroupMessage(gid, draft)
+                if (sent > 0) {
+                    MeshState.addBubble(ChatBubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé"))
+                    draft = ""
+                }
+            }
+            pendingPhoto?.let { photo ->
+                val sent = manager.sendGroupBlob(gid, byteArrayOf(KIND_PHOTO) + compressPhoto(photo))
+                if (sent > 0) {
+                    MeshState.addBubble(ChatBubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé"))
+                    pendingPhoto = null
+                }
+            }
             return
         }
         val target = if (selectedChat == PUBLIC) null else selectedChat
@@ -936,7 +1044,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi (ou à tous). */
+    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi, à tous, ou au groupe. */
     fun stopAndSendVoice() {
         recording = false
         val bytes: ByteArray? = recorder.stop()
@@ -945,8 +1053,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             return
         }
         val manager = BleMeshManager.instance ?: return
-        val target = if (selectedChat == PUBLIC) null else selectedChat
-        val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
+        val sent = if (MeshState.isGroupChat(selectedChat)) {
+            manager.sendGroupBlob(MeshState.groupIdOf(selectedChat), byteArrayOf(KIND_AUDIO) + bytes)
+        } else {
+            val target = if (selectedChat == PUBLIC) null else selectedChat
+            manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
+        }
         if (sent > 0) {
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
@@ -983,7 +1095,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             return
         }
         val target = selectedChat
-        if (target == PUBLIC) {
+        if (target == PUBLIC || MeshState.isGroupChat(target)) {
             log("Live : choisissez un contact dans la liste")
             return
         }
@@ -1076,6 +1188,94 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
+    // Création ou gestion d'un groupe
+    if (showGroupDialog) {
+        val editing = editingGroupId
+        AlertDialog(
+            onDismissRequest = { showGroupDialog = false },
+            title = { Text(if (editing == null) "Nouveau groupe" else "Gérer le groupe") },
+            text = {
+                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                    TextField(
+                        value = groupNameInput,
+                        onValueChange = { groupNameInput = it.take(GroupStore.NAME_MAX_CHARS) },
+                        singleLine = true,
+                        placeholder = { Text("nom du groupe") },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        "Membres (${groupMembers.size + 1}/${GroupStore.MAX_MEMBERS}, toi compris). Seuls tes contacts peuvent être ajoutés.",
+                        fontSize = 12.sp,
+                        color = grey
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    if (contacts.isEmpty()) {
+                        Text("Aucun contact. Scanne d'abord un QR code.", fontSize = 13.sp)
+                    }
+                    contacts.forEach { contact ->
+                        val isMember = contact.id in groupMembers
+                        val isAdmin = contact.id in groupAdmins
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                            Checkbox(
+                                checked = isMember,
+                                onCheckedChange = { on ->
+                                    groupMembers = if (on) groupMembers + contact.id else groupMembers - contact.id
+                                    if (!on) groupAdmins = groupAdmins - contact.id
+                                }
+                            )
+                            Text(
+                                "@${MeshState.nameOf(contact.id)}",
+                                fontSize = 13.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text("Admin", fontSize = 11.sp, color = grey)
+                            Checkbox(
+                                checked = isAdmin,
+                                enabled = isMember,
+                                onCheckedChange = { on ->
+                                    groupAdmins = if (on) groupAdmins + contact.id else groupAdmins - contact.id
+                                }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { saveGroup() }, enabled = groupNameInput.isNotBlank()) {
+                    Text(if (editing == null) "Créer" else "Enregistrer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showGroupDialog = false }) { Text("Annuler") }
+            }
+        )
+    }
+
+    // Quitter un groupe : sur ce téléphone seulement
+    if (showLeave) {
+        val g = currentGroup
+        AlertDialog(
+            onDismissRequest = { showLeave = false },
+            title = { Text("Quitter le groupe ?") },
+            text = { Text("Le groupe et ses messages seront retirés de ce téléphone. Il reste chez les autres membres.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (g != null) {
+                        GroupStore.remove(context, g.id)
+                        MeshState.clearChat(MeshState.groupChat(g.id))
+                        MeshState.notifyGroupsChanged()
+                    }
+                    selectedChat = PUBLIC
+                    showLeave = false
+                }) { Text("Quitter", color = Color(0xFFDC2626)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLeave = false }) { Text("Annuler") }
+            }
+        )
+    }
+
     // Suppression d'un message, après un appui long (comme WhatsApp)
     bubbleToDelete?.let { target ->
         AlertDialog(
@@ -1151,6 +1351,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     Text("Pseudo : /@$displayName", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Groupes : ${groups.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs Wi-Fi Aware : ${MeshState.wifiPeers}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -1577,7 +1778,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                 Text("AIDE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                                 Text(
                                     "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. " +
-                                        "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer.",
+                                        "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer. " +
+                                        "Pour créer un groupe, appuyez sur « + Groupe » en haut de la conversation.",
                                     color = inkColor,
                                     fontSize = 12.sp
                                 )
@@ -1685,7 +1887,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
             Spacer(Modifier.height(8.dp))
 
-            // Choix de la conversation : Tous, puis chaque contact avec sa photo (grisé s'il est hors de portée)
+            // Choix de la conversation : Tous, contacts, groupes, puis « + Groupe »
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 item {
                     ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor, null) { selectedChat = PUBLIC }
@@ -1704,18 +1906,43 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         avatar
                     ) { selectedChat = contact.id }
                 }
+                items(groups) { g ->
+                    val chat = MeshState.groupChat(g.id)
+                    ChatChip("👥 ${g.name}", selectedChat == chat, true, green, inkColor, null) { selectedChat = chat }
+                }
+                item {
+                    ChatChip("+ Groupe", false, true, green, inkColor, null) { openNewGroup() }
+                }
             }
 
             Spacer(Modifier.height(6.dp))
 
-            // Titre de la conversation, avec la photo et le statut du contact (mis à jour en direct)
-            Text(
-                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
-                color = grey,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace
-            )
-            if (selectedChat != PUBLIC) {
+            // Titre de la conversation affichée
+            if (inGroup) {
+                val g = currentGroup
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        if (g != null) "Groupe ${g.name} · ${g.members.size} membres" else "Groupe introuvable",
+                        color = grey,
+                        fontSize = 12.sp,
+                        fontFamily = FontFamily.Monospace,
+                        modifier = Modifier.weight(1f)
+                    )
+                    val me = BleMeshManager.instance?.myIdHex
+                    if (g != null && me != null && GroupStore.isAdmin(g, me)) {
+                        TextButton(onClick = { openEditGroup(g) }) { Text("Gérer", fontSize = 12.sp) }
+                    }
+                    TextButton(onClick = { showLeave = true }) { Text("Quitter", fontSize = 12.sp, color = Color(0xFFDC2626)) }
+                }
+            } else {
+                Text(
+                    if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
+                    color = grey,
+                    fontSize = 12.sp,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            if (selectedChat != PUBLIC && !inGroup) {
                 val contactAvatar = remember(selectedChat, profileTick) {
                     ProfileStore.avatarBitmapOf(context, selectedChat)
                 }
@@ -1754,77 +1981,87 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 } else {
                     LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
                         items(visible) { b ->
-                            // Photo de l'expéditeur, à côté des messages reçus d'un contact
-                            val senderAvatar = if (!b.mine && b.author != "photo" && b.author != "vocal") {
-                                remember(b.author, profileTick) { ProfileStore.avatarBitmapOf(context, b.author) }
-                            } else null
+                            // Photo de profil de l'auteur : la mienne pour mes messages, sinon celle de l'expéditeur
+                            val unknownAuthor = !b.mine && (b.author == "photo" || b.author == "vocal")
+                            val avatarBmp = remember(b.mine, b.author, profileTick, myAvatar) {
+                                if (b.mine) myAvatar
+                                else if (unknownAuthor) null
+                                else ProfileStore.avatarBitmapOf(context, b.author)
+                            }
+                            val initial = when {
+                                b.mine -> displayName.take(1).uppercase()
+                                unknownAuthor -> "?"
+                                else -> MeshState.nameOf(b.author).take(1).uppercase()
+                            }
+                            val bubble: @Composable () -> Unit = {
+                                Surface(
+                                    color = if (b.mine) mineBg else otherBg,
+                                    shape = RoundedCornerShape(16.dp),
+                                    // Appui long : proposer la suppression du message
+                                    modifier = Modifier.pointerInput(b) {
+                                        detectTapGestures(onLongPress = { bubbleToDelete = b })
+                                    }
+                                ) {
+                                    Column(Modifier.padding(10.dp)) {
+                                        Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                        b.image?.let { img ->
+                                            Image(
+                                                bitmap = img.asImageBitmap(),
+                                                contentDescription = "Photo",
+                                                contentScale = ContentScale.Fit,
+                                                modifier = Modifier.size(240.dp)
+                                            )
+                                        }
+                                        b.audio?.let { path ->
+                                            Spacer(Modifier.height(4.dp))
+                                            VoiceBubble(path, green, grey, inkColor)
+                                            Text(
+                                                "⬇ Enregistrer le vocal",
+                                                color = blue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable {
+                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
+                                        b.imagePath?.let { path ->
+                                            Text(
+                                                "⬇ Enregistrer la photo",
+                                                color = blue,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.clickable {
+                                                    val name = saveToDownloads(context, path, "image/jpeg", "photo")
+                                                    log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                }.padding(vertical = 4.dp)
+                                            )
+                                        }
+                                        Text(b.text, color = inkColor, fontSize = 15.sp)
+                                        Text(
+                                            b.time + (b.status?.let { "  $it" } ?: ""),
+                                            color = grey,
+                                            fontSize = 10.sp,
+                                            fontFamily = FontFamily.Monospace
+                                        )
+                                    }
+                                }
+                            }
                             Box(
                                 modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                                 contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
                             ) {
                                 Row(verticalAlignment = Alignment.Top) {
-                                    if (senderAvatar != null) {
-                                        Image(
-                                            bitmap = senderAvatar.asImageBitmap(),
-                                            contentDescription = "Photo de l'expéditeur",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.size(28.dp).clip(CircleShape)
-                                        )
+                                    if (!b.mine) {
+                                        AvatarDot(avatarBmp, initial, 30.dp, lightGrey, inkColor)
                                         Spacer(Modifier.width(6.dp))
                                     }
-                                    Surface(
-                                        color = if (b.mine) mineBg else otherBg,
-                                        shape = RoundedCornerShape(16.dp),
-                                        // Appui long : proposer la suppression du message
-                                        modifier = Modifier.pointerInput(b) {
-                                            detectTapGestures(onLongPress = { bubbleToDelete = b })
-                                        }
-                                    ) {
-                                        Column(Modifier.padding(10.dp)) {
-                                            Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                            b.image?.let { img ->
-                                                Image(
-                                                    bitmap = img.asImageBitmap(),
-                                                    contentDescription = "Photo",
-                                                    contentScale = ContentScale.Fit,
-                                                    modifier = Modifier.size(260.dp)
-                                                )
-                                            }
-                                            b.audio?.let { path ->
-                                                Spacer(Modifier.height(4.dp))
-                                                VoiceBubble(path, green, grey, inkColor)
-                                                Text(
-                                                    "⬇ Enregistrer le vocal",
-                                                    color = blue,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.clickable {
-                                                        val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                                        log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                    }.padding(vertical = 4.dp)
-                                                )
-                                            }
-                                            // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
-                                            b.imagePath?.let { path ->
-                                                Text(
-                                                    "⬇ Enregistrer la photo",
-                                                    color = blue,
-                                                    fontSize = 12.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.clickable {
-                                                        val name = saveToDownloads(context, path, "image/jpeg", "photo")
-                                                        log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                    }.padding(vertical = 4.dp)
-                                                )
-                                            }
-                                            Text(b.text, color = inkColor, fontSize = 15.sp)
-                                            Text(
-                                                b.time + (b.status?.let { "  $it" } ?: ""),
-                                                color = grey,
-                                                fontSize = 10.sp,
-                                                fontFamily = FontFamily.Monospace
-                                            )
-                                        }
+                                    bubble()
+                                    if (b.mine) {
+                                        Spacer(Modifier.width(6.dp))
+                                        AvatarDot(avatarBmp, initial, 30.dp, lightGrey, inkColor)
                                     }
                                 }
                             }
