@@ -8,6 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
 import android.util.Log
+import com.example.meshchat.GroupStore
 import com.example.meshchat.ProfileStore
 import com.example.meshchat.RelayConfig
 import com.example.meshchat.crypto.CryptoEngine
@@ -77,7 +78,7 @@ class BleMeshManager(private val context: Context) {
         val parts = arrayOfNulls<ByteArray>(total)
     }
 
-    /** Un profil en cours de réception, rassemblé à partir de ses morceaux. */
+    /** Un profil ou une invitation de groupe en cours de réception, rassemblé à partir de ses morceaux. */
     private class ProfileAssembly(total: Int, val createdAt: Long) {
         val parts = arrayOfNulls<ByteArray>(total)
     }
@@ -119,6 +120,9 @@ class BleMeshManager(private val context: Context) {
     /** Profils en cours de réception, par « expéditeur:version ». */
     private val profileAssemblies = ConcurrentHashMap<String, ProfileAssembly>()
 
+    /** Invitations de groupe en cours de réception, par « expéditeur:groupe:version ». */
+    private val groupAssemblies = ConcurrentHashMap<String, ProfileAssembly>()
+
     /** Téléphones vus récemment, par identifiant. Non effacé à l'extinction du Bluetooth. */
     private val lastKnown = ConcurrentHashMap<String, LastKnown>()
 
@@ -127,6 +131,12 @@ class BleMeshManager(private val context: Context) {
 
     /** Profil complet en attente pour chaque contact absent : un seul par contact. Protégé par synchronized(pendingProfiles). */
     private val pendingProfiles = HashMap<String, List<ByteArray>>()
+
+    /**
+     * Invitations de groupe en attente, par « membre:groupe » : une seule version (la plus récente) par membre et par groupe.
+     * Protégé par synchronized(pendingGroups).
+     */
+    private val pendingGroups = HashMap<String, List<ByteArray>>()
 
     /** Accusés que le destinataire n'a pas pu remettre (l'expéditeur n'était pas en vue). Protégé par synchronized(pendingAcks). */
     private val pendingAcks = HashMap<String, MutableList<ByteArray>>()
@@ -180,6 +190,9 @@ class BleMeshManager(private val context: Context) {
     @Volatile var lastSentId: String? = null
 
     val myId: ByteArray = loadOrCreateId()
+
+    /** Mon identifiant en hexadécimal : celui qui figure dans les listes de membres des groupes. */
+    val myIdHex: String get() = myId.toHex()
 
     private val keyPair: KeyPair = loadOrCreateKeyPair()
 
@@ -466,6 +479,15 @@ class BleMeshManager(private val context: Context) {
             emit("Message privé trop long (180 caractères maximum)")
             return 0
         }
+        return sendPrivatePlain(bytes, toPeerId, track = true)
+    }
+
+    /**
+     * Envoie un contenu clair, chiffré pour un seul contact. Utilisé par les messages privés
+     * et par les messages de groupe (un envoi par membre). [track] : retenir son identifiant dans lastSentId.
+     * Retourne le nombre de pairs visés, 1 si le message est gardé en attente, 0 en cas d'échec.
+     */
+    private fun sendPrivatePlain(bytes: ByteArray, toPeerId: String, track: Boolean): Int {
         val key = sharedKeyWith(toPeerId) ?: run {
             emit("Clé de ce pair pas encore reçue : message non envoyé")
             return 0
@@ -475,7 +497,7 @@ class BleMeshManager(private val context: Context) {
         val msgId = ByteArray(MeshPacket.ID_SIZE).also { SecureRandom().nextBytes(it) }
         seenSecret.add(msgId.toHex())
         ownSent.add(msgId.toHex())
-        lastSentId = msgId.toHex()
+        if (track) lastSentId = msgId.toHex()
         val cipher = CryptoEngine.encrypt(bytes, key)
         store.add(msgId, tag, cipher)
         if (targets.isEmpty()) {
@@ -595,6 +617,157 @@ class BleMeshManager(private val context: Context) {
         others.forEach { enqueue(it, frames) }
         return destination.size + others.size
     }
+
+    // ---------- Groupes ----------
+
+    /**
+     * Envoie un texte à tous les membres d'un groupe (sauf moi), chacun chiffré avec son secret partagé.
+     * Retourne le nombre d'envois lancés (ou gardés en attente). 0 : rien n'est parti.
+     */
+    fun sendGroupMessage(groupId: String, text: String): Int {
+        val group = GroupStore.get(context, groupId) ?: run { emit("Groupe introuvable"); return 0 }
+        if (myIdHex !in group.members) { emit("Tu n'es plus membre de ce groupe"); return 0 }
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        if (bytes.size > MAX_GROUP_TEXT_BYTES) {
+            emit("Message de groupe trop long (170 caractères maximum)")
+            return 0
+        }
+        val plain = byteArrayOf(GROUP_TEXT_MARK) + groupId.hexToBytes() + bytes
+        var sent = 0
+        var missing = 0
+        for (member in GroupStore.recipients(group, myIdHex)) {
+            if (sharedKeyWith(member) == null) { missing++; continue }
+            sent += sendPrivatePlain(plain, member, track = false)
+        }
+        if (missing > 0) emit("Groupe : clé manquante pour $missing membre(s), scanne leur QR code")
+        lastSentId = null
+        return sent
+    }
+
+    /**
+     * Envoie une photo ou un vocal (déjà préfixé par son type, comme pour sendBlob) à tous les membres d'un groupe.
+     * Retourne le nombre d'envois lancés. 0 : rien n'est parti.
+     */
+    fun sendGroupBlob(groupId: String, bytes: ByteArray): Int {
+        val group = GroupStore.get(context, groupId) ?: run { emit("Groupe introuvable"); return 0 }
+        if (myIdHex !in group.members) { emit("Tu n'es plus membre de ce groupe"); return 0 }
+        val marked = byteArrayOf(GROUP_BLOB_MARK) + groupId.hexToBytes() + bytes
+        var sent = 0
+        var missing = 0
+        for (member in GroupStore.recipients(group, myIdHex)) {
+            if (sharedKeyWith(member) == null) { missing++; continue }
+            sent += sendBlob(marked, member)
+        }
+        if (missing > 0) emit("Groupe : clé manquante pour $missing membre(s), scanne leur QR code")
+        lastSentId = null
+        return sent
+    }
+
+    /**
+     * Envoie l'invitation (ou la mise à jour) d'un groupe à ses membres. [previousMembers] : les anciens membres
+     * à prévenir, pour qu'un membre retiré voie le groupe disparaître. Un membre absent la reçoit à son retour.
+     */
+    fun publishGroup(group: GroupStore.Group, previousMembers: List<String> = emptyList()) {
+        val here = peers.entries.toList()
+        var count = 0
+        for (member in (group.members + previousMembers).distinct()) {
+            if (member == myIdHex) continue
+            val frames = groupFrames(member, group) ?: continue
+            val device = here.firstOrNull { peerIds[it.key] == member }?.value
+            if (device != null) {
+                enqueue(device, frames)
+            } else {
+                synchronized(pendingGroups) { pendingGroups["$member:${group.id}"] = frames }
+            }
+            count++
+        }
+        emit("Groupe « ${group.name} » envoyé à $count membre(s) (version ${group.version})")
+    }
+
+    /**
+     * Invitation de groupe chiffrée pour un membre, découpée en morceaux.
+     * Trame : type (1) + mon identifiant (8) + groupe (8) + version (4) + rang (1) + nombre (1) + données.
+     */
+    private fun groupFrames(memberId: String, group: GroupStore.Group): List<ByteArray>? {
+        val key = sharedKeyWith(memberId) ?: return null
+        val cipher = CryptoEngine.encrypt(GroupStore.encodeInvite(group), key)
+        val total = (cipher.size + GROUP_PART_BYTES - 1) / GROUP_PART_BYTES
+        if (total <= 0 || total > 255) return null
+        val gid = group.id.hexToBytes()
+        val versionBytes = group.version.toBytes4()
+        return (0 until total).map { i ->
+            val from = i * GROUP_PART_BYTES
+            val to = minOf(cipher.size, from + GROUP_PART_BYTES)
+            byteArrayOf(TYPE_GROUP_PART) + myId + gid + versionBytes +
+                byteArrayOf(i.toByte(), total.toByte()) + cipher.copyOfRange(from, to)
+        }
+    }
+
+    /** Reçoit un morceau d'invitation de groupe. Quand tout est là, le groupe est déchiffré puis accepté ou refusé. */
+    private fun handleGroupPart(body: ByteArray) {
+        val idSize = MeshPacket.ID_SIZE
+        val header = idSize + idSize + 4 + 2
+        if (body.size <= header) return
+        val senderId = body.copyOfRange(0, idSize).toHex()
+        val groupId = body.copyOfRange(idSize, idSize * 2).toHex()
+        val version = body.toInt4(idSize * 2)
+        val index = body[idSize * 2 + 4].toInt() and 0xFF
+        val total = body[idSize * 2 + 5].toInt() and 0xFF
+        if (total == 0 || index >= total) return
+        val known = GroupStore.get(context, groupId)
+        if (known != null && version <= known.version) return
+        val secret = sharedKeyWith(senderId) ?: return
+        val part = body.copyOfRange(header, body.size)
+
+        val now = System.currentTimeMillis()
+        groupAssemblies.entries.removeIf { now - it.value.createdAt > PROFILE_ASSEMBLY_MS }
+        val assemblyKey = "$senderId:$groupId:$version"
+        val assembly = groupAssemblies.getOrPut(assemblyKey) { ProfileAssembly(total, now) }
+        if (assembly.parts.size != total) return
+        assembly.parts[index] = part
+        if (assembly.parts.any { it == null }) return
+        groupAssemblies.remove(assemblyKey)
+
+        val cipher = assembly.parts.fold(ByteArray(0)) { acc, p -> acc + p!! }
+        val plain = CryptoEngine.decrypt(cipher, secret) ?: return
+        val group = GroupStore.decodeInvite(plain) ?: return
+        if (group.id != groupId || group.version != version) return
+        if (GroupStore.accept(context, group, myIdHex, senderId)) {
+            if (myIdHex in group.members) {
+                emit("Groupe reçu : ${group.name} (version $version)")
+            } else {
+                emit("Retiré du groupe : ${group.name}")
+            }
+            main.post { groupsChangedListener?.invoke() }
+        }
+    }
+
+    /** Message de groupe reçu (déjà déchiffré). Affiché seulement si le groupe est connu et si l'expéditeur en est membre. */
+    private fun deliverGroupText(sender: String, plain: ByteArray) {
+        val groupId = plain.copyOfRange(1, GROUP_HEADER).toHex()
+        val group = GroupStore.get(context, groupId)
+        if (group == null || sender !in group.members) {
+            emit("Message de groupe ignoré (groupe inconnu ou expéditeur non membre)")
+            return
+        }
+        val text = String(plain, GROUP_HEADER, plain.size - GROUP_HEADER, Charsets.UTF_8)
+        main.post { groupTextListener?.invoke(groupId, sender, text) }
+    }
+
+    /** Photo ou vocal de groupe reçu : [content] commence par la marque, l'identifiant du groupe, puis le contenu. */
+    private fun deliverGroupBlob(sender: String, content: ByteArray) {
+        val groupId = content.copyOfRange(1, GROUP_HEADER).toHex()
+        val group = GroupStore.get(context, groupId)
+        if (group == null || sender !in group.members) {
+            emit("Fichier de groupe ignoré (groupe inconnu ou expéditeur non membre)")
+            return
+        }
+        val bytes = content.copyOfRange(GROUP_HEADER, content.size)
+        emit("Fichier de groupe reçu : ${bytes.size} octets")
+        main.post { groupBlobListener?.invoke(groupId, bytes, sender) }
+    }
+
+    // ---------- Éléments gardés ----------
 
     private fun keepBlob(msgId: String, tag: ByteArray, frames: List<ByteArray>, announce: Boolean) {
         synchronized(holdings) {
@@ -721,7 +894,11 @@ class BleMeshManager(private val context: Context) {
             return
         }
         val content = plain.copyOfRange(MeshPacket.ID_SIZE, plain.size)
-        deliverBlob(content, sender)
+        if (content.size > GROUP_HEADER && content[0] == GROUP_BLOB_MARK) {
+            deliverGroupBlob(sender, content)
+        } else {
+            deliverBlob(content, sender)
+        }
         sendAck(sender, blobId, KIND_RECEIVED)
     }
 
@@ -1014,7 +1191,8 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Un pair est vu (par scan ou par trame « je suis là »). Pour une nouvelle rencontre : clé, messages
-     * publics en attente, éléments gardés (suivis par « Parti » s'ils sont à moi), profils et accusés en attente.
+     * publics en attente, éléments gardés (suivis par « Parti » s'ils sont à moi), profils, invitations
+     * de groupe et accusés en attente.
      */
     private fun onPeerSeen(device: BluetoothDevice, id: String) {
         val mac = device.address
@@ -1034,6 +1212,10 @@ class BleMeshManager(private val context: Context) {
             parcels.filter { it.group }.forEach { enqueue(device, it.frames, SendGroup(it.id, 1)) }
 
             synchronized(pendingProfiles) { pendingProfiles.remove(id) }?.let { enqueue(device, it) }
+            val invites = synchronized(pendingGroups) {
+                pendingGroups.keys.filter { it.startsWith("$id:") }.mapNotNull { pendingGroups.remove(it) }
+            }
+            invites.forEach { enqueue(device, it) }
             synchronized(pendingAcks) { pendingAcks.remove(id) }?.let { enqueue(device, it) }
         }
     }
@@ -1067,6 +1249,7 @@ class BleMeshManager(private val context: Context) {
             TYPE_PROFILE_PART -> handleProfilePart(value.copyOfRange(1, value.size))
             TYPE_PEER_LEAVE -> handlePeerLeave(value.copyOfRange(1, value.size))
             TYPE_PEER_HERE -> handlePeerHere(fromAddress, value.copyOfRange(1, value.size))
+            TYPE_GROUP_PART -> handleGroupPart(value.copyOfRange(1, value.size))
             else -> emit("Message reçu inconnu")
         }
     }
@@ -1154,7 +1337,8 @@ class BleMeshManager(private val context: Context) {
 
     /**
      * Message privé chiffré. Le corps : TTL (1) + identifiant (8) + étiquette de boîte (8) + données chiffrées.
-     * S'il est pour nous : on l'affiche et on envoie l'accusé. Sinon on le garde et on le relaie.
+     * S'il est pour nous : on l'affiche (message privé, ou message de groupe si le contenu porte la marque
+     * de groupe) et on envoie l'accusé. Sinon on le garde et on le relaie.
      * Un doublon d'un message déjà reçu renvoie l'accusé (le précédent s'est peut-être perdu).
      */
     private fun handleSecret(fromAddress: String, body: ByteArray) {
@@ -1176,8 +1360,13 @@ class BleMeshManager(private val context: Context) {
         if (opened != null) {
             if (receivedFrom.size > MAX_SEEN_FRAGMENTS) receivedFrom.clear()
             receivedFrom[hex] = opened.first
-            emit("Reçu privé de ${opened.first} : ${String(opened.second, Charsets.UTF_8)}")
-            pendingRead.getOrPut(opened.first) { mutableListOf() }.add(hex)
+            val plain = opened.second
+            if (plain.size > GROUP_HEADER && plain[0] == GROUP_TEXT_MARK) {
+                deliverGroupText(opened.first, plain)
+            } else {
+                emit("Reçu privé de ${opened.first} : ${String(plain, Charsets.UTF_8)}")
+                pendingRead.getOrPut(opened.first) { mutableListOf() }.add(hex)
+            }
             sendAck(opened.first, msgId, KIND_RECEIVED)
         } else {
             store.add(msgId, tag, cipher)
@@ -1365,6 +1554,7 @@ class BleMeshManager(private val context: Context) {
         pendingRead.clear()
         liveAssemblies.clear()
         profileAssemblies.clear()
+        groupAssemblies.clear()
         publishPeers()
         instance = null
     }
@@ -1373,6 +1563,8 @@ class BleMeshManager(private val context: Context) {
         private const val TAG = "MeshChatBLE"
         private const val MAX_TEXT_BYTES = 200
         private const val MAX_PRIVATE_BYTES = 180
+        /** Un message de groupe porte 9 octets de plus (marque + identifiant du groupe). */
+        private const val MAX_GROUP_TEXT_BYTES = 170
         private const val MAX_SEEN_FRAGMENTS = 5000
         private const val MAX_NAME_CHARS = 20
         private const val MAX_BLE_BLOB = 250_000
@@ -1397,6 +1589,7 @@ class BleMeshManager(private val context: Context) {
         private const val PEER_NOTICE_TIMEOUT_MS = 2_000L
         private const val LAST_KNOWN_MS = 10 * 60 * 1000L
         private const val PROFILE_PART_BYTES = 180
+        private const val GROUP_PART_BYTES = 180
         private const val PROFILE_ASSEMBLY_MS = 60_000L
         private const val PRIO_LIVE = 0
         private const val PRIO_NORMAL = 1
@@ -1410,6 +1603,14 @@ class BleMeshManager(private val context: Context) {
         private const val TYPE_PROFILE_PART: Byte = 8
         private const val TYPE_PEER_LEAVE: Byte = 9
         private const val TYPE_PEER_HERE: Byte = 10
+        /** Morceau d'invitation ou de mise à jour de groupe. */
+        private const val TYPE_GROUP_PART: Byte = 11
+        /** Début du contenu chiffré d'un texte de groupe (caractère de contrôle, jamais tapé par un utilisateur). */
+        private const val GROUP_TEXT_MARK: Byte = 0x01
+        /** Début du contenu chiffré d'une photo ou d'un vocal de groupe (le contenu normal commence par 1 ou 2). */
+        private const val GROUP_BLOB_MARK: Byte = 0x47
+        /** Marque (1 octet) + identifiant du groupe (8 octets). */
+        private const val GROUP_HEADER = 9
         private const val KIND_RECEIVED: Byte = 1
         private const val KIND_READ: Byte = 2
         private const val FLAG_PUBLIC = 0
@@ -1424,5 +1625,11 @@ class BleMeshManager(private val context: Context) {
         @Volatile var liveListener: ((String, ByteArray) -> Unit)? = null
         @Volatile var peersListener: ((List<MeshPeer>) -> Unit)? = null
         @Volatile var wifiSender: ((Int, ByteArray, String?) -> Int)? = null
+        /** Texte de groupe reçu : (identifiant du groupe, expéditeur, texte). */
+        @Volatile var groupTextListener: ((String, String, String) -> Unit)? = null
+        /** Photo ou vocal de groupe reçu : (identifiant du groupe, contenu avec son type en premier octet, expéditeur). */
+        @Volatile var groupBlobListener: ((String, ByteArray, String) -> Unit)? = null
+        /** La liste des groupes a changé (invitation reçue, mise à jour ou retrait). */
+        @Volatile var groupsChangedListener: (() -> Unit)? = null
     }
 }
