@@ -992,7 +992,29 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
-        if (sent > 0) {
+            if (showSettings) {
+        SettingsPanel(
+            context = context,
+            myName = myName,
+            myAvatar = myAvatar,
+            myIdText = BleMeshManager.instance?.myId?.joinToString("") { "%02x".format(it) }?.take(16) ?: "—",
+            peers = peers,
+            contacts = contacts,
+            theme = theme,
+            version = dist.version,
+            installer = dist.installer,
+            onTheme = { theme = it },
+            onSaveName = { saveName(it) },
+            onSaveStatus = { statusInput = it; saveStatus() },
+            onChangePhoto = { avatarLauncher.launch("image/*") },
+            onShowQr = { showSettings = false; showMyQr = true },
+            onScan = { showSettings = false; startScan() },
+            onShare = { if (!ShareApp.share(context)) log("Partage impossible") },
+            onDebug = { showSettings = false; showDebug = true },
+            onClose = { showSettings = false }
+        )
+    }
+    if (false) {
             val sentId = manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
