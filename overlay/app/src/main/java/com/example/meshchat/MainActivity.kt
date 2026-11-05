@@ -1,7 +1,6 @@
 package com.example.meshchat
 
 import android.Manifest
-import android.bluetooth.BluetoothManager
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -59,12 +58,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
@@ -599,90 +595,6 @@ private fun MenuIcon(color: Color, iconSize: Dp = 20.dp) {
     }
 }
 
-/** Une ligne avec un interrupteur, pour la catégorie Connexion des paramètres. */
-@Composable
-private fun RadioRow(
-    title: String,
-    note: String,
-    checked: Boolean,
-    enabled: Boolean,
-    color: Color,
-    ink: Color,
-    grey: Color,
-    onChange: (Boolean) -> Unit
-) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp)
-    ) {
-        Column(Modifier.weight(1f).padding(end = 8.dp)) {
-            Text(title, color = ink, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-            Text(note, fontSize = 11.sp, color = grey)
-        }
-        Switch(
-            checked = checked,
-            onCheckedChange = onChange,
-            enabled = enabled,
-            colors = SwitchDefaults.colors(checkedTrackColor = color)
-        )
-    }
-}
-
-/**
- * Carte repliable des paramètres : coins arrondis, icône, titre, courte explication.
- * Le contenu n'apparaît que lorsque la carte est ouverte.
- */
-@Composable
-private fun SettingsCard(
-    icon: String,
-    title: String,
-    hint: String,
-    open: Boolean,
-    accent: Color,
-    cardBg: Color,
-    ink: Color,
-    grey: Color,
-    onToggle: () -> Unit,
-    content: @Composable ColumnScope.() -> Unit
-) {
-    Surface(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = cardBg,
-        border = BorderStroke(1.dp, Color(0xFFE5E7EB)),
-        shadowElevation = 1.dp
-    ) {
-        Column {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable(onClick = onToggle)
-                    .padding(14.dp)
-            ) {
-                Box(
-                    modifier = Modifier.size(38.dp).clip(CircleShape).background(accent.copy(alpha = 0.15f)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(icon, fontSize = 17.sp)
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(title, color = ink, fontSize = 14.sp, fontWeight = FontWeight.Bold)
-                    Text(hint, color = grey, fontSize = 11.sp)
-                }
-                Text(if (open) "▲" else "▼", color = grey, fontSize = 12.sp)
-            }
-            if (open) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(start = 14.dp, end = 14.dp, bottom = 14.dp),
-                    content = content
-                )
-            }
-        }
-    }
-}
-
 /**
  * Bouton micro. Appui bref : vocal classique (démarrer, puis arrêter et envoyer).
  * Avec le live activé : appui maintenu = parler en direct, le relâcher arrête.
@@ -802,8 +714,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var selectedChat by remember { mutableStateOf(PUBLIC) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
-    /** Carte ouverte dans les paramètres : 0 = aucune, sinon le numéro de la catégorie (1 à 8). */
-    var openSection by remember { mutableStateOf(0) }
     var showDebug by remember { mutableStateOf(false) }
     var showMyQr by remember { mutableStateOf(false) }
     /** Message dont la suppression est demandée (appui long sur la bulle). */
@@ -825,17 +735,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val recorder = remember { VoiceRecorder(context) }
     val wifiStatus = remember { WifiAwareSupport.status(context) }
     val dist = remember { readDistribution(context) }
-
-    // Interrupteurs radio : état gardé entre les lancements
-    var radioBle by remember { mutableStateOf(prefs.getBoolean("radio_ble", true)) }
-    var radioWifiAware by remember { mutableStateOf(prefs.getBoolean("radio_wifi_aware", true)) }
-    var radioWifiDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
-    var radioLongRange by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
-    var scanDuringSend by remember { mutableStateOf(prefs.getBoolean(BleMeshManager.PREF_SCAN_SEND, true)) }
-    val wifiAwareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
-    val longRangeSupported = remember {
-        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
-    }
 
     // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
@@ -899,7 +798,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val orange = Color(0xFFF59E0B)
     val grey = Color(0xFF9CA3AF)
     val bgColor = if (dark) Color(0xFF09090B) else Color(0xFFF6F7F6)
-    val cardBg = if (dark) Color(0xFF1F2937) else Color.White
     val inkColor = if (dark) Color.White else Color(0xFF111827)
     val mineBg = if (dark) Color(0xFF14532D) else Color(0xFFDCFCE7)
     val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
@@ -992,29 +890,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
-            if (showSettings) {
-        SettingsPanel(
-            context = context,
-            myName = myName,
-            myAvatar = myAvatar,
-            myIdText = BleMeshManager.instance?.myId?.joinToString("") { "%02x".format(it) }?.take(16) ?: "—",
-            peers = peers,
-            contacts = contacts,
-            theme = theme,
-            version = dist.version,
-            installer = dist.installer,
-            onTheme = { theme = it },
-            onSaveName = { saveName(it) },
-            onSaveStatus = { statusInput = it; saveStatus() },
-            onChangePhoto = { avatarLauncher.launch("image/*") },
-            onShowQr = { showSettings = false; showMyQr = true },
-            onScan = { showSettings = false; startScan() },
-            onShare = { if (!ShareApp.share(context)) log("Partage impossible") },
-            onDebug = { showSettings = false; showDebug = true },
-            onClose = { showSettings = false }
-        )
-    }
-    if (false) {
+        if (sent > 0) {
             val sentId = manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
@@ -1258,8 +1134,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Paramètres : panneau latéral défilable, organisé en catégories repliables
-        if (showSettings) {
+    // Paramètres : nouvel écran plein écran (voir SettingsUi.kt)
+    if (showSettings) {
         SettingsPanel(
             context = context,
             myName = myName,
@@ -1280,449 +1156,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             onDebug = { showSettings = false; showDebug = true },
             onClose = { showSettings = false }
         )
-    }
-    if (false) {
-        val myIdText = BleMeshManager.instance?.myId?.joinToString("") { "%02x".format(it) }?.take(16) ?: "—"
-        Dialog(
-            onDismissRequest = { showSettings = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
-        ) {
-            Row(Modifier.fillMaxSize().background(Color(0x99000000))) {
-                Box(Modifier.weight(1f).fillMaxHeight().clickable { showSettings = false })
-                Surface(
-                    modifier = Modifier.fillMaxHeight().fillMaxWidth(0.9f).widthIn(max = 360.dp),
-                    color = bgColor
-                ) {
-                    Column(Modifier.fillMaxSize()) {
-                        // En-tête du panneau
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 6.dp)
-                        ) {
-                            Text(
-                                "Paramètres",
-                                color = green,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f)
-                            )
-                            TextButton(onClick = { showSettings = false }) { Text("✕", fontSize = 18.sp, color = inkColor) }
-                        }
-
-                        Column(
-                            Modifier
-                                .weight(1f)
-                                .fillMaxWidth()
-                                .verticalScroll(rememberScrollState())
-                                .padding(horizontal = 12.dp)
-                                .padding(bottom = 24.dp)
-                        ) {
-                            // 1. Mon profil
-                            SettingsCard(
-                                icon = "👤",
-                                title = "Mon profil",
-                                hint = "Photo, nom d'utilisateur, identifiant et statut.",
-                                open = openSection == 1,
-                                accent = green,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = {
-                                    nameInput = myName
-                                    statusInput = ProfileStore.myStatus(context)
-                                    openSection = if (openSection == 1) 0 else 1
-                                }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                                    val avatarPreview = myAvatar
-                                    if (avatarPreview != null) {
-                                        Image(
-                                            bitmap = avatarPreview.asImageBitmap(),
-                                            contentDescription = "Ma photo de profil",
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.size(60.dp).clip(CircleShape)
-                                        )
-                                    } else {
-                                        Box(
-                                            modifier = Modifier.size(60.dp).clip(CircleShape).background(lightGrey),
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Text("?", color = grey, fontSize = 18.sp)
-                                        }
-                                    }
-                                    Spacer(Modifier.width(12.dp))
-                                    Button(
-                                        onClick = { avatarLauncher.launch("image/*") },
-                                        colors = ButtonDefaults.buttonColors(containerColor = green)
-                                    ) {
-                                        Text("Changer la photo", color = Color.White, fontSize = 12.sp)
-                                    }
-                                }
-                                Text("Recadrée en carré, envoyée à chaque contact.", color = grey, fontSize = 11.sp)
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("NOM D'UTILISATEUR", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.height(6.dp))
-                                TextField(
-                                    value = nameInput,
-                                    onValueChange = { nameInput = it.take(20) },
-                                    singleLine = true,
-                                    placeholder = { Text("votre nom", color = grey, fontSize = 12.sp) },
-                                    textStyle = TextStyle(fontSize = 14.sp),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Button(
-                                    onClick = { saveName(nameInput) },
-                                    enabled = nameInput.isNotBlank(),
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = green)
-                                ) {
-                                    Text("Enregistrer le nom", color = Color.White, fontSize = 13.sp)
-                                }
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("IDENTIFIANT", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text(myIdText, color = inkColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                                Text("Un code technique qui identifie ton téléphone.", color = grey, fontSize = 11.sp)
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("STATUT (60 caractères)", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.height(6.dp))
-                                TextField(
-                                    value = statusInput,
-                                    onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
-                                    singleLine = true,
-                                    placeholder = { Text("ton statut", color = grey, fontSize = 12.sp) },
-                                    textStyle = TextStyle(fontSize = 14.sp),
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                                Spacer(Modifier.height(6.dp))
-                                Button(
-                                    onClick = { saveStatus() },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = green)
-                                ) {
-                                    Text("Enregistrer le statut", color = Color.White, fontSize = 13.sp)
-                                }
-                                Text("Envoyé à chaque contact à l'enregistrement.", color = grey, fontSize = 11.sp)
-                            }
-
-                            // 2. Apparence
-                            SettingsCard(
-                                icon = "🎨",
-                                title = "Apparence",
-                                hint = "Thème clair, sombre ou automatique.",
-                                open = openSection == 2,
-                                accent = blue,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 2) 0 else 2 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                listOf("système", "clair", "sombre").forEach { option ->
-                                    Button(
-                                        onClick = { theme = option },
-                                        modifier = Modifier.fillMaxWidth(),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (theme == option) green else lightGrey
-                                        )
-                                    ) {
-                                        Text(
-                                            when (option) {
-                                                "clair" -> "Clair"
-                                                "sombre" -> "Sombre"
-                                                else -> "Automatique (système)"
-                                            },
-                                            color = if (theme == option) Color.White else inkColor,
-                                            fontSize = 13.sp
-                                        )
-                                    }
-                                    Spacer(Modifier.height(6.dp))
-                                }
-                            }
-
-                            // 3. Connexion
-                            SettingsCard(
-                                icon = "📡",
-                                title = "Connexion",
-                                hint = "Service, Bluetooth, Wi-Fi et Push-to-Talk.",
-                                open = openSection == 3,
-                                accent = blue,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 3) 0 else 3 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                RadioRow(
-                                    title = "Service en arrière-plan",
-                                    note = "Si désactivé, le service s'arrête quand l'app est quittée.",
-                                    checked = AppState.runInBackground,
-                                    enabled = true,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { AppState.runInBackground = it }
-                                )
-                                RadioRow(
-                                    title = "Bluetooth BLE",
-                                    note = "Annonce, recherche et messages par Bluetooth. Coupé : les contacts et les clés restent.",
-                                    checked = radioBle,
-                                    enabled = true,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        radioBle = on
-                                        prefs.edit().putBoolean("radio_ble", on).apply()
-                                        BleMeshManager.instance?.setBleEnabled(on)
-                                    }
-                                )
-                                RadioRow(
-                                    title = "Scan pendant les envois",
-                                    note = "Garde la recherche de téléphones active pendant un envoi. À couper si les envois échouent sur ce téléphone.",
-                                    checked = scanDuringSend,
-                                    enabled = true,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        scanDuringSend = on
-                                        prefs.edit().putBoolean(BleMeshManager.PREF_SCAN_SEND, on).apply()
-                                    }
-                                )
-                                RadioRow(
-                                    title = "Wi-Fi Aware",
-                                    note = if (wifiAwareSupported) "Gros fichiers entre voisins directs." else "Non supporté par ce téléphone.",
-                                    checked = radioWifiAware,
-                                    enabled = wifiAwareSupported,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        radioWifiAware = on
-                                        prefs.edit().putBoolean("radio_wifi_aware", on).apply()
-                                        MeshService.instance?.setWifiAwareEnabled(on)
-                                    }
-                                )
-                                RadioRow(
-                                    title = "Wi-Fi Direct",
-                                    note = "Gros fichiers privés, avec invitation à accepter sur l'autre téléphone.",
-                                    checked = radioWifiDirect,
-                                    enabled = true,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        radioWifiDirect = on
-                                        prefs.edit().putBoolean("radio_wifi_direct", on).apply()
-                                        MeshService.instance?.setWifiDirectEnabled(on)
-                                    }
-                                )
-                                RadioRow(
-                                    title = "Bluetooth LE Long Range",
-                                    note = if (longRangeSupported) {
-                                        "Plus loin, mais plus lent. Actif seulement si l'autre téléphone le supporte aussi."
-                                    } else {
-                                        "Non supporté par ce téléphone."
-                                    },
-                                    checked = radioLongRange,
-                                    enabled = longRangeSupported,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        radioLongRange = on
-                                        prefs.edit().putBoolean("radio_long_range", on).apply()
-                                    }
-                                )
-                                RadioRow(
-                                    title = "Live Push-to-Talk",
-                                    note = "Maintenir le micro pour parler en direct à un contact à portée. Un appui bref envoie toujours un vocal.",
-                                    checked = AppState.liveOn,
-                                    enabled = true,
-                                    color = green,
-                                    ink = inkColor,
-                                    grey = grey,
-                                    onChange = { on ->
-                                        AppState.liveOn = on
-                                        prefs.edit().putBoolean("live_on", on).apply()
-                                    }
-                                )
-                            }
-
-                            // 4. Réseau et relais
-                            SettingsCard(
-                                icon = "🔁",
-                                title = "Réseau et relais",
-                                hint = "Relais maximum, voisins par relais, conservation.",
-                                open = openSection == 4,
-                                accent = green,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 4) 0 else 4 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                RelaySettings(context, green, grey, inkColor)
-                            }
-
-                            // 5. Contacts
-                            SettingsCard(
-                                icon = "👥",
-                                title = "Contacts",
-                                hint = "Mon QR code, scanner un QR code, liste des contacts.",
-                                open = openSection == 5,
-                                accent = green,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 5) 0 else 5 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                Button(
-                                    onClick = { showSettings = false; showMyQr = true },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = green)
-                                ) {
-                                    Text("Mon QR code", color = Color.White, fontSize = 13.sp)
-                                }
-                                Spacer(Modifier.height(6.dp))
-                                Button(
-                                    onClick = { showSettings = false; startScan() },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = green)
-                                ) {
-                                    Text("Scanner un QR code", color = Color.White, fontSize = 13.sp)
-                                }
-                                Text(
-                                    "Scanne le QR de quelqu'un pour l'ajouter, même s'il est loin.",
-                                    color = grey,
-                                    fontSize = 11.sp
-                                )
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("MES CONTACTS (${contacts.size})", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Spacer(Modifier.height(6.dp))
-                                if (contacts.isEmpty()) {
-                                    Text("Aucun contact pour l'instant.", color = grey, fontSize = 12.sp)
-                                } else {
-                                    contacts.forEach { contact ->
-                                        val online = peers.any { it.id == contact.id }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
-                                        ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(10.dp)
-                                                    .clip(CircleShape)
-                                                    .background(if (online) green else grey.copy(alpha = 0.5f))
-                                            )
-                                            Spacer(Modifier.width(10.dp))
-                                            Column(Modifier.weight(1f)) {
-                                                Text("@${MeshState.nameOf(contact.id)}", color = inkColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                                                Text(if (online) "À portée" else "Hors de portée", color = grey, fontSize = 11.sp)
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // 6. Partage
-                            SettingsCard(
-                                icon = "📤",
-                                title = "Partage",
-                                hint = "Envoyer l'application à un proche.",
-                                open = openSection == 6,
-                                accent = blue,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 6) 0 else 6 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                Button(
-                                    onClick = { if (!ShareApp.share(context)) log("Partage impossible") },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = blue)
-                                ) {
-                                    Text("Partager Samchat", color = Color.White, fontSize = 13.sp)
-                                }
-                                Text(
-                                    "Envoie l'application par Bluetooth ou Nearby Share, sans internet.",
-                                    color = grey,
-                                    fontSize = 11.sp
-                                )
-                            }
-
-                            // 7. Langue et assistance
-                            SettingsCard(
-                                icon = "🌍",
-                                title = "Langue et assistance",
-                                hint = "Langue, aide et informations sur l'application.",
-                                open = openSection == 7,
-                                accent = orange,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 7) 0 else 7 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                Text("LANGUE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text("Français", color = inkColor, fontSize = 13.sp)
-                                Text("D'autres langues viendront plus tard.", color = grey, fontSize = 11.sp)
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("AIDE", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. " +
-                                        "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer. " +
-                                        "Un message devient « ✓✓ Lu » en vert quand l'autre personne l'a ouvert.",
-                                    color = inkColor,
-                                    fontSize = 12.sp
-                                )
-
-                                Spacer(Modifier.height(14.dp))
-                                Text("À PROPOS", color = grey, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                Text("Samchat, version ${dist.version}", color = inkColor, fontSize = 12.sp)
-                            }
-
-                            // 8. Diagnostic avancé
-                            SettingsCard(
-                                icon = "🛠",
-                                title = "Diagnostic avancé",
-                                hint = "Outils de debug et informations techniques.",
-                                open = openSection == 8,
-                                accent = orange,
-                                cardBg = cardBg,
-                                ink = inkColor,
-                                grey = grey,
-                                onToggle = { openSection = if (openSection == 8) 0 else 8 }
-                            ) {
-                                Spacer(Modifier.height(6.dp))
-                                Text("Version : ${dist.version}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                Text("Installée depuis : ${dist.installer}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                Text("Pairs à portée : ${peers.size}", color = inkColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                Spacer(Modifier.height(10.dp))
-                                Button(
-                                    onClick = { showSettings = false; showDebug = true },
-                                    modifier = Modifier.fillMaxWidth(),
-                                    colors = ButtonDefaults.buttonColors(containerColor = orange)
-                                ) {
-                                    BugIcon(Color.White, 18.dp)
-                                    Spacer(Modifier.width(8.dp))
-                                    Text("Ouvrir les outils de debug", color = Color.White, fontSize = 13.sp)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
     }
 
     val canSend = draft.isNotBlank() || pendingPhoto != null
@@ -1753,7 +1186,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 TextButton(onClick = {
                     nameInput = myName
                     statusInput = ProfileStore.myStatus(context)
-                    openSection = 0
                     showSettings = true
                 }) {
                     MenuIcon(inkColor, 20.dp)
