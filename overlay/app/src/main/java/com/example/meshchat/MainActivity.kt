@@ -229,6 +229,8 @@ object AppState {
     var runInBackground by mutableStateOf(true)
     /** Live push-to-talk : maintenir le micro pour parler en direct. Gardé entre les lancements. */
     var liveOn by mutableStateOf(false)
+    /** Contact dont la discussion est ouverte (null : « Tous » ou aucune). Sert à signaler « Lu ». */
+    var openChat: String? = null
 }
 
 class MainActivity : ComponentActivity() {
@@ -254,11 +256,19 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // Si le service tourne déjà (écran rouvert), l'interrupteur doit le montrer
-        if (BleMeshManager.instance != null) AppState.serviceOn = true
+        val manager = BleMeshManager.instance
+        if (manager != null) {
+            AppState.serviceOn = true
+            // La discussion ouverte est de nouveau visible : les messages en attente sont signalés « Lus »
+            manager.openChatPeer = AppState.openChat
+            AppState.openChat?.let { manager.markRead(it) }
+        }
     }
 
     override fun onStop() {
         super.onStop()
+        // L'écran n'est plus visible : on ne signale plus « Lu » automatiquement
+        BleMeshManager.instance?.openChatPeer = null
         // Si « Rester actif en arrière-plan » est désactivé, le service s'arrête quand l'app quitte l'écran
         if (!AppState.runInBackground && AppState.serviceOn) stopMeshService()
     }
@@ -308,6 +318,9 @@ private const val KIND_AUDIO: Byte = 2
 
 /** Durée d'appui à partir de laquelle un appui devient du live. En dessous, c'est un appui bref (vocal classique). */
 private const val HOLD_MS = 350L
+
+/** Statut d'un envoi qui vient d'être lancé : privé = en attente de « Parti » puis des accusés, public = envoyé. */
+private fun initialStatus(target: String?): String = if (target == null) "✓ Envoyé" else "⏳ En attente"
 
 /** Titre affiché au-dessus d'une bulle : le nom du contact, ou anonXXXX tant qu'on ne le connaît pas. */
 private fun bubbleTitle(b: ChatBubble): String = when {
@@ -802,14 +815,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var nameInput by remember { mutableStateOf("") }
     var statusInput by remember { mutableStateOf("") }
 
-    // Groupes : fenêtre de création ou de gestion, et confirmation pour quitter
-    var showGroupDialog by remember { mutableStateOf(false) }
-    var editingGroupId by remember { mutableStateOf<String?>(null) }
-    var groupNameInput by remember { mutableStateOf("") }
-    var groupMembers by remember { mutableStateOf(setOf<String>()) }
-    var groupAdmins by remember { mutableStateOf(setOf<String>()) }
-    var showLeave by remember { mutableStateOf(false) }
-
     val chatState = rememberLazyListState()
     val context = LocalContext.current
     val prefs = remember { context.getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
@@ -826,6 +831,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var radioWifiAware by remember { mutableStateOf(prefs.getBoolean("radio_wifi_aware", true)) }
     var radioWifiDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
     var radioLongRange by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
+    var scanDuringSend by remember { mutableStateOf(prefs.getBoolean(BleMeshManager.PREF_SCAN_SEND, true)) }
     val wifiAwareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
     val longRangeSupported = remember {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
@@ -840,10 +846,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val counts = MeshState.counts
     val displayName = if (myName.isNotBlank()) myName else pseudo
 
-    // Rafraîchissement : ces compteurs changent quand un profil ou la liste des groupes change
+    // Rafraîchissement : ce compteur change dès qu'un profil de contact est accepté
     val profileTick = MeshState.profileTick
-    val groupsTick = MeshState.groupsTick
-    val groups = remember(groupsTick) { GroupStore.all(context) }
 
     fun log(line: String) = MeshState.addJournal(line)
 
@@ -890,6 +894,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         else -> isSystemInDarkTheme()
     }
     val green = if (dark) Color(0xFF6EE7A0) else Color(0xFF3F7D3F)
+    val readGreen = if (dark) Color(0xFF4ADE80) else Color(0xFF16A34A)
     val blue = if (dark) Color(0xFF93C5FD) else Color(0xFF2563EB)
     val orange = Color(0xFFF59E0B)
     val grey = Color(0xFF9CA3AF)
@@ -901,12 +906,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
 
-    val inGroup = MeshState.isGroupChat(selectedChat)
-    val currentGroup = if (inGroup) groups.firstOrNull { it.id == MeshState.groupIdOf(selectedChat) } else null
-
-    // Quand on ouvre une discussion privée, on signale « Lu » pour les messages reçus de ce téléphone
-    LaunchedEffect(selectedChat) {
-        if (selectedChat != PUBLIC && !MeshState.isGroupChat(selectedChat)) BleMeshManager.instance?.markRead(selectedChat)
+    // Discussion privée ouverte : le moteur sait qu'on la lit, donc les messages reçus sont signalés « Lus » tout de suite.
+    // Les messages déjà reçus et pas encore lus sont signalés à l'ouverture.
+    LaunchedEffect(selectedChat, AppState.serviceOn) {
+        val peer = if (selectedChat != PUBLIC) selectedChat else null
+        AppState.openChat = peer
+        val manager = BleMeshManager.instance
+        manager?.openChatPeer = peer
+        if (peer != null) manager?.markRead(peer)
     }
 
     // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
@@ -931,83 +938,11 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    /** Ouvre la fenêtre de création d'un groupe. */
-    fun openNewGroup() {
-        editingGroupId = null
-        groupNameInput = ""
-        groupMembers = emptySet()
-        groupAdmins = emptySet()
-        showGroupDialog = true
-    }
-
-    /** Ouvre la fenêtre de gestion d'un groupe (administrateurs seulement). */
-    fun openEditGroup(g: GroupStore.Group) {
-        val me = BleMeshManager.instance?.myIdHex ?: return
-        editingGroupId = g.id
-        groupNameInput = g.name
-        groupMembers = g.members.filter { it != me }.toSet()
-        groupAdmins = g.admins.filter { it != me }.toSet()
-        showGroupDialog = true
-    }
-
-    /** Enregistre le groupe (création ou modification) puis l'envoie aux membres. */
-    fun saveGroup() {
-        val manager = BleMeshManager.instance
-        if (manager == null) {
-            log("Service non activé : activez le service")
-            return
-        }
-        val me = manager.myIdHex
-        val others = groupMembers.filter { it != me }
-        val admins = groupAdmins.filter { it != me && it in groupMembers }
-        val editing = editingGroupId
-        if (editing == null) {
-            val created = GroupStore.create(context, groupNameInput, me, others)
-            if (created == null) {
-                log("Groupe impossible : nom vide ou plus de ${GroupStore.MAX_MEMBERS} membres")
-                return
-            }
-            val finalGroup = if (admins.isNotEmpty()) {
-                GroupStore.edit(context, created.id, me, created.name, others, admins) ?: created
-            } else created
-            manager.publishGroup(finalGroup)
-            selectedChat = MeshState.groupChat(finalGroup.id)
-        } else {
-            val old = GroupStore.get(context, editing)
-            val updated = GroupStore.edit(context, editing, me, groupNameInput, others, admins)
-            if (updated == null) {
-                log("Modification refusée : nom vide, trop de membres ou tu n'es pas administrateur")
-                return
-            }
-            manager.publishGroup(updated, old?.members ?: emptyList())
-        }
-        MeshState.notifyGroupsChanged()
-        showGroupDialog = false
-    }
-
-    /** Envoie le texte et/ou la photo (au téléphone choisi, à tous, ou au groupe choisi). */
+    /** Envoie le texte et/ou la photo (au téléphone choisi, ou à tous). */
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
             log("Service non activé : activez le service")
-            return
-        }
-        if (MeshState.isGroupChat(selectedChat)) {
-            val gid = MeshState.groupIdOf(selectedChat)
-            if (draft.isNotBlank()) {
-                val sent = manager.sendGroupMessage(gid, draft)
-                if (sent > 0) {
-                    MeshState.addBubble(ChatBubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé"))
-                    draft = ""
-                }
-            }
-            pendingPhoto?.let { photo ->
-                val sent = manager.sendGroupBlob(gid, byteArrayOf(KIND_PHOTO) + compressPhoto(photo))
-                if (sent > 0) {
-                    MeshState.addBubble(ChatBubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé"))
-                    pendingPhoto = null
-                }
-            }
             return
         }
         val target = if (selectedChat == PUBLIC) null else selectedChat
@@ -1016,7 +951,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             if (sent > 0) {
                 // Pour un message privé, on garde son identifiant pour recevoir ses accusés
                 MeshState.addBubble(
-                    ChatBubble(true, "moi", draft, null, selectedChat, status = "✓ Envoyé", msgId = manager.lastSentId)
+                    ChatBubble(true, "moi", draft, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
                 )
                 draft = ""
             }
@@ -1024,7 +959,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         pendingPhoto?.let { photo ->
             val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
-                MeshState.addBubble(ChatBubble(true, "moi", "Photo envoyée", photo, selectedChat, status = "✓ Envoyé"))
+                MeshState.addBubble(
+                    ChatBubble(true, "moi", "Photo envoyée", photo, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
+                )
                 pendingPhoto = null
             }
         }
@@ -1044,7 +981,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi, à tous, ou au groupe. */
+    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi (ou à tous). */
     fun stopAndSendVoice() {
         recording = false
         val bytes: ByteArray? = recorder.stop()
@@ -1053,16 +990,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             return
         }
         val manager = BleMeshManager.instance ?: return
-        val sent = if (MeshState.isGroupChat(selectedChat)) {
-            manager.sendGroupBlob(MeshState.groupIdOf(selectedChat), byteArrayOf(KIND_AUDIO) + bytes)
-        } else {
-            val target = if (selectedChat == PUBLIC) null else selectedChat
-            manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
-        }
+        val target = if (selectedChat == PUBLIC) null else selectedChat
+        val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
         if (sent > 0) {
+            val sentId = manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
-            MeshState.addBubble(ChatBubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath, status = "✓ Envoyé"))
+            MeshState.addBubble(
+                ChatBubble(true, "moi", "Vocal envoyé", null, selectedChat, file.absolutePath, status = initialStatus(target), msgId = sentId)
+            )
         }
     }
 
@@ -1095,7 +1031,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             return
         }
         val target = selectedChat
-        if (target == PUBLIC || MeshState.isGroupChat(target)) {
+        if (target == PUBLIC) {
             log("Live : choisissez un contact dans la liste")
             return
         }
@@ -1188,105 +1124,15 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Création ou gestion d'un groupe
-    if (showGroupDialog) {
-        val editing = editingGroupId
-        AlertDialog(
-            onDismissRequest = { showGroupDialog = false },
-            title = { Text(if (editing == null) "Nouveau groupe" else "Gérer le groupe") },
-            text = {
-                Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
-                    TextField(
-                        value = groupNameInput,
-                        onValueChange = { groupNameInput = it.take(GroupStore.NAME_MAX_CHARS) },
-                        singleLine = true,
-                        placeholder = { Text("nom du groupe") },
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "Membres (${groupMembers.size + 1}/${GroupStore.MAX_MEMBERS}, toi compris). Seuls tes contacts peuvent être ajoutés.",
-                        fontSize = 12.sp,
-                        color = grey
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    if (contacts.isEmpty()) {
-                        Text("Aucun contact. Scanne d'abord un QR code.", fontSize = 13.sp)
-                    }
-                    contacts.forEach { contact ->
-                        val isMember = contact.id in groupMembers
-                        val isAdmin = contact.id in groupAdmins
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                            Checkbox(
-                                checked = isMember,
-                                onCheckedChange = { on ->
-                                    groupMembers = if (on) groupMembers + contact.id else groupMembers - contact.id
-                                    if (!on) groupAdmins = groupAdmins - contact.id
-                                }
-                            )
-                            Text(
-                                "@${MeshState.nameOf(contact.id)}",
-                                fontSize = 13.sp,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text("Admin", fontSize = 11.sp, color = grey)
-                            Checkbox(
-                                checked = isAdmin,
-                                enabled = isMember,
-                                onCheckedChange = { on ->
-                                    groupAdmins = if (on) groupAdmins + contact.id else groupAdmins - contact.id
-                                }
-                            )
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { saveGroup() }, enabled = groupNameInput.isNotBlank()) {
-                    Text(if (editing == null) "Créer" else "Enregistrer")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showGroupDialog = false }) { Text("Annuler") }
-            }
-        )
-    }
-
-    // Quitter un groupe : sur ce téléphone seulement
-    if (showLeave) {
-        val g = currentGroup
-        AlertDialog(
-            onDismissRequest = { showLeave = false },
-            title = { Text("Quitter le groupe ?") },
-            text = { Text("Le groupe et ses messages seront retirés de ce téléphone. Il reste chez les autres membres.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (g != null) {
-                        GroupStore.remove(context, g.id)
-                        MeshState.clearChat(MeshState.groupChat(g.id))
-                        MeshState.notifyGroupsChanged()
-                    }
-                    selectedChat = PUBLIC
-                    showLeave = false
-                }) { Text("Quitter", color = Color(0xFFDC2626)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLeave = false }) { Text("Annuler") }
-            }
-        )
-    }
-
     // Suppression d'un message, après un appui long (comme WhatsApp)
     bubbleToDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { bubbleToDelete = null },
             title = { Text("Supprimer ce message ?") },
-            text = { Text("Le message sera retiré de cet écran. Il ne sera pas supprimé chez les autres.") },
+            text = { Text("Le message sera retiré de ce téléphone. Il ne sera pas supprimé chez les autres.") },
             confirmButton = {
                 TextButton(onClick = {
-                    MeshState.bubbles.remove(target)
-                    target.audio?.let { File(it).delete() }
-                    target.imagePath?.let { File(it).delete() }
+                    MeshState.deleteBubble(target)
                     bubbleToDelete = null
                     log("Message supprimé")
                 }) { Text("Supprimer", color = Color(0xFFDC2626)) }
@@ -1351,7 +1197,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     Text("Pseudo : /@$displayName", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Groupes : ${groups.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs Wi-Fi Aware : ${MeshState.wifiPeers}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
@@ -1593,6 +1438,19 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                     }
                                 )
                                 RadioRow(
+                                    title = "Scan pendant les envois",
+                                    note = "Garde la recherche de téléphones active pendant un envoi. À couper si les envois échouent sur ce téléphone.",
+                                    checked = scanDuringSend,
+                                    enabled = true,
+                                    color = green,
+                                    ink = inkColor,
+                                    grey = grey,
+                                    onChange = { on ->
+                                        scanDuringSend = on
+                                        prefs.edit().putBoolean(BleMeshManager.PREF_SCAN_SEND, on).apply()
+                                    }
+                                )
+                                RadioRow(
                                     title = "Wi-Fi Aware",
                                     note = if (wifiAwareSupported) "Gros fichiers entre voisins directs." else "Non supporté par ce téléphone.",
                                     checked = radioWifiAware,
@@ -1779,7 +1637,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                 Text(
                                     "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. " +
                                         "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer. " +
-                                        "Pour créer un groupe, appuyez sur « + Groupe » en haut de la conversation.",
+                                        "Un message devient « ✓✓ Lu » en vert quand l'autre personne l'a ouvert.",
                                     color = inkColor,
                                     fontSize = 12.sp
                                 )
@@ -1887,7 +1745,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
             Spacer(Modifier.height(8.dp))
 
-            // Choix de la conversation : Tous, contacts, groupes, puis « + Groupe »
+            // Choix de la conversation : Tous, puis chaque contact avec sa photo (grisé s'il est hors de portée)
             LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 item {
                     ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor, null) { selectedChat = PUBLIC }
@@ -1906,43 +1764,18 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         avatar
                     ) { selectedChat = contact.id }
                 }
-                items(groups) { g ->
-                    val chat = MeshState.groupChat(g.id)
-                    ChatChip("👥 ${g.name}", selectedChat == chat, true, green, inkColor, null) { selectedChat = chat }
-                }
-                item {
-                    ChatChip("+ Groupe", false, true, green, inkColor, null) { openNewGroup() }
-                }
             }
 
             Spacer(Modifier.height(6.dp))
 
             // Titre de la conversation affichée
-            if (inGroup) {
-                val g = currentGroup
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        if (g != null) "Groupe ${g.name} · ${g.members.size} membres" else "Groupe introuvable",
-                        color = grey,
-                        fontSize = 12.sp,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.weight(1f)
-                    )
-                    val me = BleMeshManager.instance?.myIdHex
-                    if (g != null && me != null && GroupStore.isAdmin(g, me)) {
-                        TextButton(onClick = { openEditGroup(g) }) { Text("Gérer", fontSize = 12.sp) }
-                    }
-                    TextButton(onClick = { showLeave = true }) { Text("Quitter", fontSize = 12.sp, color = Color(0xFFDC2626)) }
-                }
-            } else {
-                Text(
-                    if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
-                    color = grey,
-                    fontSize = 12.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-            if (selectedChat != PUBLIC && !inGroup) {
+            Text(
+                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
+                color = grey,
+                fontSize = 12.sp,
+                fontFamily = FontFamily.Monospace
+            )
+            if (selectedChat != PUBLIC) {
                 val contactAvatar = remember(selectedChat, profileTick) {
                     ProfileStore.avatarBitmapOf(context, selectedChat)
                 }
@@ -2040,12 +1873,25 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                             )
                                         }
                                         Text(b.text, color = inkColor, fontSize = 15.sp)
-                                        Text(
-                                            b.time + (b.status?.let { "  $it" } ?: ""),
-                                            color = grey,
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace
-                                        )
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Text(
+                                                b.time,
+                                                color = grey,
+                                                fontSize = 10.sp,
+                                                fontFamily = FontFamily.Monospace
+                                            )
+                                            // Le statut devient vert et en gras quand le message est lu
+                                            b.status?.let { s ->
+                                                val read = s.contains("Lu")
+                                                Text(
+                                                    "  $s",
+                                                    color = if (read) readGreen else grey,
+                                                    fontSize = if (read) 11.sp else 10.sp,
+                                                    fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
+                                                    fontFamily = FontFamily.Monospace
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }
