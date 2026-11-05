@@ -147,20 +147,12 @@ private object LivePlayer {
 }
 
 /**
- * Mémoire de l'application : journal, conversations, pairs, contacts, groupes.
+ * Mémoire de l'application : journal, conversations, pairs, contacts.
  * Elle vit tant que le service tourne. Les conversations sont aussi sauvegardées sur le téléphone,
  * pour être retrouvées après un redémarrage de l'app.
  */
 object MeshState {
     const val PUBLIC = "public"
-
-    /** Clé de conversation d'un groupe : « g: » suivi de son identifiant. */
-    const val GROUP_PREFIX = "g:"
-
-    fun groupChat(groupId: String): String = GROUP_PREFIX + groupId
-    fun isGroupChat(chat: String): Boolean = chat.startsWith(GROUP_PREFIX)
-    fun groupIdOf(chat: String): String = chat.removePrefix(GROUP_PREFIX)
-
     private const val KIND_PHOTO: Byte = 1
     private const val KIND_AUDIO: Byte = 2
     private const val MAX_JOURNAL = 200
@@ -193,18 +185,6 @@ object MeshState {
     var profileTick by mutableStateOf(0)
         private set
 
-    /**
-     * Compteur qui change quand la liste des groupes change (invitation, mise à jour, retrait).
-     * L'écran le lit pour relire les groupes.
-     */
-    var groupsTick by mutableStateOf(0)
-        private set
-
-    /** À appeler après avoir créé, modifié ou quitté un groupe sur ce téléphone, pour rafraîchir l'écran. */
-    fun notifyGroupsChanged() {
-        groupsTick++
-    }
-
     /** Dernier statut connu de chaque message privé, pour les bulles créées après l'arrivée du statut. */
     private val statusById = HashMap<String, String>()
 
@@ -233,9 +213,6 @@ object MeshState {
         }
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
         BleMeshManager.liveListener = { sender, audio -> onLive(sender, audio) }
-        BleMeshManager.groupTextListener = { groupId, sender, text -> onGroupText(groupId, sender, text) }
-        BleMeshManager.groupBlobListener = { groupId, bytes, sender -> onGroupBlob(groupId, bytes, sender) }
-        BleMeshManager.groupsChangedListener = { groupsTick++ }
         registerVisibilityTracking(context.applicationContext)
     }
 
@@ -346,6 +323,14 @@ object MeshState {
         old.imagePath?.let { File(it).delete() }
     }
 
+    /** Supprime un message (appui long) : de l'écran, du téléphone et de l'historique sauvegardé. */
+    fun deleteBubble(b: ChatBubble) {
+        bubbles.remove(b)
+        b.audio?.let { File(it).delete() }
+        b.imagePath?.let { File(it).delete() }
+        saveHistory()
+    }
+
     /** Suit les écrans ouverts, pour savoir si l'app est à l'écran. Enregistré une seule fois. */
     private fun registerVisibilityTracking(app: Context) {
         if (callbacksRegistered) return
@@ -394,17 +379,6 @@ object MeshState {
         )
         bubbles.add(shown)
         if (bubbles.size > MAX_BUBBLES) removeOldest()
-        saveHistory()
-    }
-
-    /** Supprime de l'historique tous les messages d'une conversation (utilisé quand on quitte un groupe). */
-    fun clearChat(chat: String) {
-        val toRemove = bubbles.filter { it.chat == chat }
-        toRemove.forEach {
-            it.audio?.let { p -> File(p).delete() }
-            it.imagePath?.let { p -> File(p).delete() }
-        }
-        bubbles.removeAll(toRemove)
         saveHistory()
     }
 
@@ -554,52 +528,20 @@ object MeshState {
 
     /** Photo ou vocal complet reçu. Le premier octet indique le type. */
     private fun onBlob(bytes: ByteArray, from: String?) {
-        val author = from ?: ""
-        val chat = from ?: PUBLIC
-        val notifyKey = if (from == null) PUBLIC else "p$from"
-        val title = if (from == null) "Tous" else "@${nameOf(from)}"
-        storeBlob(bytes, author, chat, notifyKey, title, publicAuthor = from == null)
-    }
-
-    /** Texte de groupe reçu : rangé dans la conversation du groupe. */
-    private fun onGroupText(groupId: String, sender: String, text: String) {
-        count("in_text")
-        addBubble(ChatBubble(false, sender, text, null, groupChat(groupId)))
-        val name = appContext?.let { GroupStore.get(it, groupId)?.name } ?: "Groupe"
-        notifyMessage("g$groupId", name, "@${nameOf(sender)} : $text")
-    }
-
-    /** Photo ou vocal de groupe reçu : rangé dans la conversation du groupe. */
-    private fun onGroupBlob(groupId: String, bytes: ByteArray, sender: String) {
-        count("in_file")
-        val name = appContext?.let { GroupStore.get(it, groupId)?.name } ?: "Groupe"
-        storeBlob(bytes, sender, groupChat(groupId), "g$groupId", name, publicAuthor = false)
-    }
-
-    /**
-     * Range une photo ou un vocal reçu. [publicAuthor] : sur « Tous », l'auteur affiché est « photo » ou « vocal »
-     * (comme avant), car l'expéditeur n'est pas connu.
-     */
-    private fun storeBlob(
-        bytes: ByteArray,
-        author: String,
-        chat: String,
-        notifyKey: String,
-        title: String,
-        publicAuthor: Boolean
-    ) {
         val context = appContext ?: return
         if (bytes.isNotEmpty() && bytes[0] == KIND_AUDIO) {
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes.copyOfRange(1, bytes.size))
-            val shownAuthor = if (publicAuthor) "vocal" else author
-            addBubble(ChatBubble(false, shownAuthor, "Vocal reçu", null, chat, file.absolutePath))
-            notifyMessage(notifyKey, title, "Vocal reçu")
+            addBubble(ChatBubble(false, from ?: "vocal", "Vocal reçu", null, from ?: PUBLIC, file.absolutePath))
+            notifyBlob(from, "Vocal reçu")
         } else if (bytes.isNotEmpty() && bytes[0] == KIND_PHOTO) {
             BitmapFactory.decodeByteArray(bytes, 1, bytes.size - 1)?.let { photo ->
-                val shownAuthor = if (publicAuthor) "photo" else author
-                addBubble(ChatBubble(false, shownAuthor, "Photo reçue", photo, chat))
-                notifyMessage(notifyKey, title, "Photo reçue")
+                if (from == null) {
+                    addBubble(ChatBubble(false, "photo", "Photo reçue", photo, PUBLIC))
+                } else {
+                    addBubble(ChatBubble(false, from, "Photo reçue", photo, from))
+                }
+                notifyBlob(from, "Photo reçue")
             }
         }
     }
