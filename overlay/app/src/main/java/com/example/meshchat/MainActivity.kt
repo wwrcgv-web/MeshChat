@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.MediaStore
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -53,7 +54,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -581,20 +581,6 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     }
 }
 
-/** Icône « trois traits horizontaux » (menu), dessinée à la main. */
-@Composable
-private fun MenuIcon(color: Color, iconSize: Dp = 20.dp) {
-    Canvas(modifier = Modifier.size(iconSize)) {
-        val w = size.width
-        val h = size.height
-        val stroke = w * 0.12f
-        for (i in 0..2) {
-            val y = h * (0.2f + i * 0.3f)
-            drawLine(color, Offset(0f, y), Offset(w, y), strokeWidth = stroke)
-        }
-    }
-}
-
 /**
  * Bouton micro. Appui bref : vocal classique (démarrer, puis arrêter et envoyer).
  * Avec le live activé : appui maintenu = parler en direct, le relâcher arrête.
@@ -712,6 +698,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
+    /** Vrai : une conversation est ouverte. Faux : on voit la liste des discussions. */
+    var inChat by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
@@ -804,10 +792,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
     val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
 
-    // Discussion privée ouverte : le moteur sait qu'on la lit, donc les messages reçus sont signalés « Lus » tout de suite.
+    // « Lu » seulement quand la conversation est vraiment ouverte (pas quand on est sur la liste).
     // Les messages déjà reçus et pas encore lus sont signalés à l'ouverture.
-    LaunchedEffect(selectedChat, AppState.serviceOn) {
-        val peer = if (selectedChat != PUBLIC) selectedChat else null
+    LaunchedEffect(selectedChat, AppState.serviceOn, inChat) {
+        val peer = if (inChat && selectedChat != PUBLIC) selectedChat else null
         AppState.openChat = peer
         val manager = BleMeshManager.instance
         manager?.openChatPeer = peer
@@ -1134,7 +1122,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Paramètres : nouvel écran plein écran (voir SettingsUi.kt)
+    // Paramètres : écran plein écran (voir SettingsUi.kt)
     if (showSettings) {
         SettingsPanel(
             context = context,
@@ -1158,19 +1146,46 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
+    // Le bouton retour du téléphone ferme la conversation et revient à la liste
+    BackHandler(enabled = inChat) { inChat = false }
+
+    // Écran d'accueil : liste des discussions (voir HomeUi.kt)
+    if (!inChat) {
+        ChatListScreen(
+            context = context,
+            contacts = contacts,
+            peers = peers,
+            bubbles = bubbles,
+            profileTick = profileTick,
+            serviceOn = AppState.serviceOn,
+            bg = bgColor,
+            field = inputBg,
+            ink = inkColor,
+            grey = grey,
+            green = green,
+            onOpen = { id -> selectedChat = id; inChat = true },
+            onSettings = {
+                nameInput = myName
+                statusInput = ProfileStore.myStatus(context)
+                showSettings = true
+            },
+            onShowQr = { showMyQr = true },
+            onScan = { startScan() }
+        )
+        return
+    }
+
     val canSend = draft.isNotBlank() || pendingPhoto != null
 
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : logo, /@nom, mesh, pairs et bouton menu (trois traits)
+            // En-tête : retour, /@nom, mesh, pairs et bouton menu (trois traits)
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Image(
-                    painter = painterResource(id = R.mipmap.ic_launcher),
-                    contentDescription = "Logo Samchat",
-                    modifier = Modifier.size(32.dp)
-                )
-                Spacer(Modifier.width(8.dp))
+                TextButton(onClick = { inChat = false }) {
+                    Text("←", color = inkColor, fontSize = 24.sp)
+                }
+                Spacer(Modifier.width(4.dp))
                 Text(
                     "/@$displayName",
                     color = green,
@@ -1188,7 +1203,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     statusInput = ProfileStore.myStatus(context)
                     showSettings = true
                 }) {
-                    MenuIcon(inkColor, 20.dp)
+                    Text("⋮", color = inkColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
