@@ -1,5 +1,6 @@
 package com.example.meshchat
-
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
