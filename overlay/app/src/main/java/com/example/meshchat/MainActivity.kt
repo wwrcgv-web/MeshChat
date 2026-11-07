@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -1158,11 +1159,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             bubbles = bubbles,
             profileTick = profileTick,
             serviceOn = AppState.serviceOn,
-            bg = bgColor,
-            field = inputBg,
-            ink = inkColor,
-            grey = grey,
-            green = green,
             onOpen = { id -> selectedChat = id; inChat = true },
             onSettings = {
                 nameInput = myName
@@ -1180,7 +1176,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
         Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
 
-            // En-tête : retour, /@nom, mesh, pairs et bouton menu (trois traits)
+            // En-tête : retour, /@nom, mesh, pairs et bouton menu
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
                 TextButton(onClick = { inChat = false }) {
                     Text("←", color = inkColor, fontSize = 24.sp)
@@ -1205,33 +1201,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 }) {
                     Text("⋮", color = inkColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
                 }
-            }
-
-            Spacer(Modifier.height(8.dp))
-
-            // Interrupteur du service
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(
-                    if (AppState.serviceOn) "SERVICE ACTIF" else "SERVICE ARRÊTÉ",
-                    color = inkColor,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    modifier = Modifier.weight(1f)
-                )
-                Switch(
-                    checked = AppState.serviceOn,
-                    onCheckedChange = { on ->
-                        if (on) {
-                            log("Activation du service demandée")
-                            onStart()
-                        } else {
-                            log("Service arrêté")
-                            onStop()
-                        }
-                    },
-                    colors = SwitchDefaults.colors(checkedTrackColor = green)
-                )
             }
 
             Spacer(Modifier.height(8.dp))
