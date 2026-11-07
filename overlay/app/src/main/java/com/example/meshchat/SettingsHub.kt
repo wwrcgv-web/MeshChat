@@ -30,16 +30,13 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 
-/**
- * Langues proposées. Seules celles de [TEXTS] sont traduites ; les autres affichent le français
- * tant que leur traduction n'a pas été relue par une personne qui parle la langue.
- */
 private val LANGUAGES = listOf(
     "fr" to "Français", "en" to "English", "es" to "Español", "pt" to "Português",
     "ar" to "العربية", "zh" to "中文",
@@ -49,7 +46,6 @@ private val LANGUAGES = listOf(
     "ig" to "Igbo", "ak" to "Akan", "srr" to "Sérère", "tmh" to "Tamasheq"
 )
 
-/** Traductions : clé -> (français, anglais, espagnol, portugais, arabe, chinois). */
 private val TEXTS: Map<String, List<String>> = mapOf(
     "settings" to listOf("Paramètres", "Settings", "Ajustes", "Definições", "الإعدادات", "设置"),
     "profile" to listOf("Mon profil", "My profile", "Mi perfil", "Meu perfil", "ملفي الشخصي", "我的资料"),
@@ -105,10 +101,16 @@ private val TEXTS: Map<String, List<String>> = mapOf(
     "scan_send" to listOf("Scan pendant les envois", "Scan during sends", "Escanear durante envíos", "Procurar durante envios", "المسح أثناء الإرسال", "发送时扫描"),
     "scan_send_note" to listOf("À couper si les envois échouent.", "Turn off if sends fail.", "Desactivar si los envíos fallan.", "Desligar se os envios falharem.", "أوقفه إذا فشلت الإرسالات.", "发送失败时请关闭。"),
     "live" to listOf("Parole en direct", "Live talk", "Habla en directo", "Fala em direto", "التحدث المباشر", "实时语音"),
-    "live_note" to listOf("Maintenir le micro pour parler. Un appui bref envoie un vocal.", "Hold the mic to talk. A short tap sends a voice note.", "Mantén el micrófono para hablar. Un toque breve envía una nota de voz.", "Mantenha o microfone para falar. Um toque breve envia uma nota de voz.", "اضغط مطولاً على الميكروفون للتحدث. النقرة القصيرة ترسل رسالة صوتية.", "按住麦克风说话。短按发送语音消息。")
+    "live_note" to listOf("Maintenir le micro pour parler. Un appui bref envoie un vocal.", "Hold the mic to talk. A short tap sends a voice note.", "Mantén el micrófono para hablar. Un toque breve envía una nota de voz.", "Mantenha o microfone para falar. Um toque breve envia uma nota de voz.", "اضغط مطولاً على الميكروفون للتحدث. النقرة القصيرة ترسل رسالة صوتية.", "按住麦克风说话。短按发送语音消息。"),
+    "internet" to listOf("Internet (relais)", "Internet (relay)", "Internet (relevo)", "Internet (retransmissão)", "الإنترنت (الترحيل)", "互联网（中继）"),
+    "internet_note" to listOf("Désactivé par défaut. Utilise les données mobiles.", "Off by default. Uses mobile data.", "Desactivado por defecto. Usa datos móviles.", "Desativado por defeito. Usa dados móveis.", "معطّل افتراضياً. يستخدم بيانات الهاتف.", "默认关闭。会使用移动数据。"),
+    "token" to listOf("Jeton d'accès", "Access token", "Token de acceso", "Token de acesso", "رمز الوصول", "访问令牌"),
+    "token_note" to listOf("Saisi une fois, jamais affiché ensuite.", "Entered once, never shown again.", "Se introduce una vez, no se vuelve a mostrar.", "Introduzido uma vez, não volta a ser mostrado.", "يُدخل مرة واحدة ولا يُعرض لاحقاً.", "只需输入一次，之后不再显示。"),
+    "token_save" to listOf("Enregistrer le jeton", "Save token", "Guardar token", "Guardar token", "حفظ الرمز", "保存令牌"),
+    "token_saved" to listOf("Jeton enregistré", "Token saved", "Token guardado", "Token guardado", "تم حفظ الرمز", "令牌已保存"),
+    "token_clear" to listOf("Effacer le jeton", "Clear token", "Borrar token", "Apagar token", "مسح الرمز", "清除令牌")
 )
 
-/** Index de la langue dans chaque liste de [TEXTS] : fr=0, en=1, es=2, pt=3, ar=4, zh=5. Les autres : français. */
 private fun langIndex(lang: String): Int = when (lang) {
     "en" -> 1
     "es" -> 2
@@ -334,6 +336,9 @@ fun SettingsHub(
     var radioDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
     var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
     var liveOn by remember { mutableStateOf(AppState.liveOn) }
+    var internetOn by remember { mutableStateOf(RelayClient.isEnabled(context)) }
+    var tokenInput by remember { mutableStateOf("") }
+    var tokenSaved by remember { mutableStateOf(prefs.getString("relay_token", "")?.isNotEmpty() == true) }
     val awareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
     val longSupported = remember {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
@@ -350,6 +355,7 @@ fun SettingsHub(
         6 -> tr(lang, "share")
         7 -> tr(lang, "help")
         8 -> tr(lang, "diag")
+        9 -> tr(lang, "internet")
         else -> tr(lang, "settings")
     }
 
@@ -453,6 +459,8 @@ fun SettingsHub(
                         HubSwitch(tr(lang, "live"), tr(lang, "live_note"), liveOn) { on ->
                             liveOn = on; AppState.liveOn = on; prefs.edit().putBoolean("live_on", on).apply()
                         }
+                        Spacer(Modifier.height(10.dp))
+                        HubButton(tr(lang, "internet"), selected = false) { page = 9 }
                     }
 
                     4 -> {
@@ -521,6 +529,40 @@ fun SettingsHub(
                         Text("${tr(lang, "peers")} : ${peers.size}", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                         Spacer(Modifier.height(12.dp))
                         HubButton(tr(lang, "debug_btn"), selected = false, onClick = onDebug)
+                    }
+
+                    9 -> {
+                        HubSwitch(tr(lang, "internet"), tr(lang, "internet_note"), internetOn) { on ->
+                            internetOn = on
+                            RelayClient.setEnabled(context, on)
+                        }
+                        HubLabel(tr(lang, "token"))
+                        Text(tr(lang, "token_note"), color = SamchatColors.Grey, fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        TextField(
+                            value = tokenInput,
+                            onValueChange = { tokenInput = it },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = hubFieldColors(),
+                            textStyle = TextStyle(fontSize = 16.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "token_save"), enabled = tokenInput.length >= 16) {
+                            RelayClient.saveToken(context, tokenInput)
+                            tokenInput = ""
+                            tokenSaved = true
+                        }
+                        if (tokenSaved) {
+                            Text(tr(lang, "token_saved"), color = SamchatColors.Green, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                            Spacer(Modifier.height(8.dp))
+                            HubButton(tr(lang, "token_clear"), selected = false) {
+                                RelayClient.saveToken(context, "")
+                                tokenSaved = false
+                            }
+                        }
                     }
                 }
             }
