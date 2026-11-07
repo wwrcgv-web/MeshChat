@@ -36,70 +36,91 @@ import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 
-/** Langues proposées. Seul le français et l'anglais sont traduits pour l'instant. */
+/**
+ * Langues proposées. Seules celles de [TEXTS] sont traduites ; les autres affichent le français
+ * tant que leur traduction n'a pas été relue par une personne qui parle la langue.
+ */
 private val LANGUAGES = listOf(
-    "fr" to "Français", "en" to "English", "mos" to "Mooré", "dyu" to "Dioula",
-    "bm" to "Bambara", "wo" to "Wolof", "ff" to "Pulaar", "snk" to "Soninké",
-    "song" to "Songhaï", "ha" to "Hausa", "mnk" to "Mandinka", "fon" to "Fon",
-    "ee" to "Ewe", "yo" to "Yoruba", "ig" to "Igbo", "ak" to "Akan",
-    "srr" to "Sérère", "tmh" to "Tamasheq", "ar" to "Arabe", "pt" to "Portugais", "es" to "Espagnol"
+    "fr" to "Français", "en" to "English", "es" to "Español", "pt" to "Português",
+    "ar" to "العربية", "zh" to "中文",
+    "bm" to "Bambara", "dyu" to "Dioula", "wo" to "Wolof", "ha" to "Hausa",
+    "mos" to "Mooré", "ff" to "Pulaar", "snk" to "Soninké", "song" to "Songhaï",
+    "mnk" to "Mandinka", "fon" to "Fon", "ee" to "Ewe", "yo" to "Yoruba",
+    "ig" to "Igbo", "ak" to "Akan", "srr" to "Sérère", "tmh" to "Tamasheq"
 )
 
-private val TEXTS: Map<String, Pair<String, String>> = mapOf(
-    "settings" to ("Paramètres" to "Settings"),
-    "profile" to ("Mon profil" to "My profile"),
-    "profile_hint" to ("Photo, nom, identifiant et statut." to "Photo, name, ID and status."),
-    "appearance" to ("Apparence" to "Appearance"),
-    "appearance_hint" to ("Thème clair, sombre ou automatique." to "Light, dark or automatic theme."),
-    "connection" to ("Connexion" to "Connection"),
-    "connection_hint" to ("Service, Bluetooth, Wi-Fi et Push-to-Talk." to "Service, Bluetooth, Wi-Fi and Push-to-Talk."),
-    "relay" to ("Réseau et relais" to "Network and relay"),
-    "relay_hint" to ("Relais maximum, voisins, conservation." to "Max relays, neighbours, retention."),
-    "contacts" to ("Contacts" to "Contacts"),
-    "contacts_hint" to ("Mon QR code, scanner, liste des contacts." to "My QR code, scan, contact list."),
-    "share" to ("Partage" to "Share"),
-    "share_hint" to ("Envoyer l'application à un proche." to "Send the app to someone."),
-    "help" to ("Langue et assistance" to "Language and help"),
-    "help_hint" to ("Langue, aide et informations." to "Language, help and information."),
-    "diag" to ("Diagnostic avancé" to "Advanced diagnostics"),
-    "diag_hint" to ("Outils de debug et informations techniques." to "Debug tools and technical info."),
-    "name" to ("NOM D'UTILISATEUR" to "USERNAME"),
-    "save_name" to ("Enregistrer le nom" to "Save name"),
-    "photo" to ("Changer la photo" to "Change photo"),
-    "status" to ("STATUT (60 caractères)" to "STATUS (60 characters)"),
-    "save_status" to ("Enregistrer le statut" to "Save status"),
-    "id" to ("IDENTIFIANT" to "ID"),
-    "lang" to ("LANGUE" to "LANGUAGE"),
-    "lang_note" to (
-        "Les autres langues seront traduites une à une. Pour l'instant, cet écran reste en français." to
-            "Other languages are translated one by one. For now, this screen stays in French."
-        ),
-    "help_body" to (
-        "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. " +
-            "Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer." to
-            "Samchat works without internet. Keep Bluetooth on and stay a few metres from your contacts. " +
-            "To add a contact, scan their QR code. Long-press a message to delete it."
-        ),
-    "about" to ("À PROPOS" to "ABOUT"),
-    "scan" to ("Scanner un QR code" to "Scan a QR code"),
-    "myqr" to ("Mon QR code" to "My QR code"),
-    "share_btn" to ("Partager Samchat" to "Share Samchat"),
-    "debug_btn" to ("Ouvrir les outils de debug" to "Open debug tools"),
-    "inst" to ("Installée depuis" to "Installed from"),
-    "peers" to ("Pairs à portée" to "Peers in range"),
-    "bg" to ("Service en arrière-plan" to "Background service"),
-    "bg_note" to ("S'arrête à la fermeture de l'app si désactivé." to "Stops when the app closes if turned off."),
-    "ble" to ("Bluetooth" to "Bluetooth"),
-    "ble_note" to ("Messages par Bluetooth." to "Messages over Bluetooth."),
-    "scan_send" to ("Scan pendant les envois" to "Scan during sends"),
-    "scan_send_note" to ("À couper si les envois échouent." to "Turn off if sends fail."),
-    "live" to ("Parole en direct" to "Live talk"),
-    "live_note" to ("Maintenir le micro pour parler. Un appui bref envoie un vocal." to "Hold the mic to talk. A short tap sends a voice note.")
+/** Traductions : clé -> (français, anglais, espagnol, portugais, arabe, chinois). */
+private val TEXTS: Map<String, List<String>> = mapOf(
+    "settings" to listOf("Paramètres", "Settings", "Ajustes", "Definições", "الإعدادات", "设置"),
+    "profile" to listOf("Mon profil", "My profile", "Mi perfil", "Meu perfil", "ملفي الشخصي", "我的资料"),
+    "profile_hint" to listOf("Photo, nom, identifiant et statut.", "Photo, name, ID and status.", "Foto, nombre, ID y estado.", "Foto, nome, ID e estado.", "الصورة والاسم والمعرّف والحالة.", "头像、名称、ID 和状态。"),
+    "appearance" to listOf("Apparence", "Appearance", "Apariencia", "Aparência", "المظهر", "外观"),
+    "appearance_hint" to listOf("Thème clair, sombre ou automatique.", "Light, dark or automatic theme.", "Tema claro, oscuro o automático.", "Tema claro, escuro ou automático.", "سمة فاتحة أو داكنة أو تلقائية.", "浅色、深色或自动主题。"),
+    "connection" to listOf("Connexion", "Connection", "Conexión", "Ligação", "الاتصال", "连接"),
+    "connection_hint" to listOf("Service, Bluetooth, Wi-Fi et Push-to-Talk.", "Service, Bluetooth, Wi-Fi and Push-to-Talk.", "Servicio, Bluetooth, Wi-Fi y Push-to-Talk.", "Serviço, Bluetooth, Wi-Fi e Push-to-Talk.", "الخدمة والبلوتوث والواي فاي والتحدث المباشر.", "服务、蓝牙、Wi-Fi 和按键通话。"),
+    "relay" to listOf("Réseau et relais", "Network and relay", "Red y relevo", "Rede e retransmissão", "الشبكة والترحيل", "网络与中继"),
+    "relay_hint" to listOf("Relais maximum, voisins, conservation.", "Max relays, neighbours, retention.", "Máximo de relevos, vecinos, conservación.", "Máximo de retransmissões, vizinhos, retenção.", "أقصى عدد من الترحيلات والجيران والاحتفاظ.", "最多中继、邻居、保留时间。"),
+    "contacts" to listOf("Contacts", "Contacts", "Contactos", "Contactos", "جهات الاتصال", "联系人"),
+    "contacts_hint" to listOf("Mon QR code, scanner, liste des contacts.", "My QR code, scan, contact list.", "Mi código QR, escanear, lista de contactos.", "Meu QR code, ler, lista de contactos.", "رمز QR الخاص بي، المسح، قائمة الجهات.", "我的二维码、扫描、联系人列表。"),
+    "share" to listOf("Partage", "Share", "Compartir", "Partilhar", "مشاركة", "分享"),
+    "share_hint" to listOf("Envoyer l'application à un proche.", "Send the app to someone.", "Enviar la app a alguien.", "Enviar a app a alguém.", "أرسل التطبيق إلى شخص قريب.", "把应用发送给亲友。"),
+    "help" to listOf("Langue et assistance", "Language and help", "Idioma y ayuda", "Idioma e ajuda", "اللغة والمساعدة", "语言与帮助"),
+    "help_hint" to listOf("Langue, aide et informations.", "Language, help and information.", "Idioma, ayuda e información.", "Idioma, ajuda e informação.", "اللغة والمساعدة والمعلومات.", "语言、帮助和信息。"),
+    "diag" to listOf("Diagnostic avancé", "Advanced diagnostics", "Diagnóstico avanzado", "Diagnóstico avançado", "تشخيص متقدم", "高级诊断"),
+    "diag_hint" to listOf("Outils de debug et informations techniques.", "Debug tools and technical info.", "Herramientas de depuración e información técnica.", "Ferramentas de depuração e informação técnica.", "أدوات التصحيح والمعلومات التقنية.", "调试工具和技术信息。"),
+    "name" to listOf("NOM D'UTILISATEUR", "USERNAME", "NOMBRE DE USUARIO", "NOME DE UTILIZADOR", "اسم المستخدم", "用户名"),
+    "save_name" to listOf("Enregistrer le nom", "Save name", "Guardar nombre", "Guardar nome", "حفظ الاسم", "保存名称"),
+    "photo" to listOf("Changer la photo", "Change photo", "Cambiar foto", "Mudar foto", "تغيير الصورة", "更换头像"),
+    "status" to listOf("STATUT (60 caractères)", "STATUS (60 characters)", "ESTADO (60 caracteres)", "ESTADO (60 caracteres)", "الحالة (60 حرفًا)", "状态（60 个字符）"),
+    "save_status" to listOf("Enregistrer le statut", "Save status", "Guardar estado", "Guardar estado", "حفظ الحالة", "保存状态"),
+    "id" to listOf("IDENTIFIANT", "ID", "ID", "ID", "المعرّف", "ID"),
+    "lang" to listOf("LANGUE", "LANGUAGE", "IDIOMA", "IDIOMA", "اللغة", "语言"),
+    "lang_note" to listOf(
+        "Les autres langues seront ajoutées une à une après relecture.",
+        "Other languages will be added one by one after review.",
+        "Otros idiomas se añadirán uno a uno tras revisión.",
+        "Outros idiomas serão adicionados um a um após revisão.",
+        "ستُضاف اللغات الأخرى واحدة تلو الأخرى بعد المراجعة.",
+        "其他语言将在审校后逐一添加。"
+    ),
+    "help_body" to listOf(
+        "Samchat fonctionne sans internet. Gardez le Bluetooth allumé et restez à quelques mètres de vos contacts. Pour ajouter un contact, scannez son QR code. Appuyez longtemps sur un message pour le supprimer.",
+        "Samchat works without internet. Keep Bluetooth on and stay a few metres from your contacts. To add a contact, scan their QR code. Long-press a message to delete it.",
+        "Samchat funciona sin internet. Mantén el Bluetooth activado y quédate a pocos metros de tus contactos. Para añadir un contacto, escanea su código QR. Mantén pulsado un mensaje para borrarlo.",
+        "O Samchat funciona sem internet. Mantenha o Bluetooth ligado e fique a poucos metros dos seus contactos. Para adicionar um contacto, leia o QR code dele. Mantenha premida uma mensagem para a apagar.",
+        "يعمل Samchat بدون إنترنت. أبقِ البلوتوث مفعّلاً وابقَ على بعد بضعة أمتار من جهات اتصالك. لإضافة جهة اتصال، امسح رمز QR الخاص بها. اضغط مطوّلاً على رسالة لحذفها.",
+        "Samchat 无需互联网即可使用。请保持蓝牙开启，并与联系人保持几米的距离。添加联系人请扫描其二维码。长按消息可将其删除。"
+    ),
+    "about" to listOf("À PROPOS", "ABOUT", "ACERCA DE", "SOBRE", "حول", "关于"),
+    "scan" to listOf("Scanner un QR code", "Scan a QR code", "Escanear un código QR", "Ler um QR code", "مسح رمز QR", "扫描二维码"),
+    "myqr" to listOf("Mon QR code", "My QR code", "Mi código QR", "Meu QR code", "رمز QR الخاص بي", "我的二维码"),
+    "share_btn" to listOf("Partager Samchat", "Share Samchat", "Compartir Samchat", "Partilhar Samchat", "مشاركة Samchat", "分享 Samchat"),
+    "debug_btn" to listOf("Ouvrir les outils de debug", "Open debug tools", "Abrir herramientas de depuración", "Abrir ferramentas de depuração", "فتح أدوات التصحيح", "打开调试工具"),
+    "inst" to listOf("Installée depuis", "Installed from", "Instalada desde", "Instalada a partir de", "مثبّت من", "安装来源"),
+    "peers" to listOf("Pairs à portée", "Peers in range", "Pares al alcance", "Pares ao alcance", "الأقران في النطاق", "范围内的设备"),
+    "bg" to listOf("Service en arrière-plan", "Background service", "Servicio en segundo plano", "Serviço em segundo plano", "الخدمة في الخلفية", "后台服务"),
+    "bg_note" to listOf("S'arrête à la fermeture de l'app si désactivé.", "Stops when the app closes if turned off.", "Se detiene al cerrar la app si está desactivado.", "Para ao fechar a app se estiver desativado.", "تتوقف عند إغلاق التطبيق إذا تم تعطيلها.", "关闭后，应用退出时停止。"),
+    "ble" to listOf("Bluetooth", "Bluetooth", "Bluetooth", "Bluetooth", "البلوتوث", "蓝牙"),
+    "ble_note" to listOf("Messages par Bluetooth.", "Messages over Bluetooth.", "Mensajes por Bluetooth.", "Mensagens por Bluetooth.", "الرسائل عبر البلوتوث.", "通过蓝牙发送消息。"),
+    "scan_send" to listOf("Scan pendant les envois", "Scan during sends", "Escanear durante envíos", "Procurar durante envios", "المسح أثناء الإرسال", "发送时扫描"),
+    "scan_send_note" to listOf("À couper si les envois échouent.", "Turn off if sends fail.", "Desactivar si los envíos fallan.", "Desligar se os envios falharem.", "أوقفه إذا فشلت الإرسالات.", "发送失败时请关闭。"),
+    "live" to listOf("Parole en direct", "Live talk", "Habla en directo", "Fala em direto", "التحدث المباشر", "实时语音"),
+    "live_note" to listOf("Maintenir le micro pour parler. Un appui bref envoie un vocal.", "Hold the mic to talk. A short tap sends a voice note.", "Mantén el micrófono para hablar. Un toque breve envía una nota de voz.", "Mantenha o microfone para falar. Um toque breve envia uma nota de voz.", "اضغط مطولاً على الميكروفون للتحدث. النقرة القصيرة ترسل رسالة صوتية.", "按住麦克风说话。短按发送语音消息。")
 )
+
+/** Index de la langue dans chaque liste de [TEXTS] : fr=0, en=1, es=2, pt=3, ar=4, zh=5. Les autres : français. */
+private fun langIndex(lang: String): Int = when (lang) {
+    "en" -> 1
+    "es" -> 2
+    "pt" -> 3
+    "ar" -> 4
+    "zh" -> 5
+    else -> 0
+}
 
 private fun tr(lang: String, key: String): String {
-    val pair = TEXTS[key] ?: return key
-    return if (lang == "en") pair.second else pair.first
+    val list = TEXTS[key] ?: return key
+    return list[langIndex(lang)]
 }
 
 @Composable
@@ -280,10 +301,7 @@ private fun BigAvatar(bitmap: Bitmap?, letter: String, size: Int) {
     }
 }
 
-/**
- * Réglages : liste à icônes et chevrons, puis une page par rubrique.
- * Même paramètres que l'ancien SettingsScreen : MainActivity n'a qu'à appeler SettingsHub à la place.
- */
+/** Réglages : liste à icônes et chevrons, puis une page par rubrique. Seul panneau de l'application. */
 @Composable
 fun SettingsHub(
     context: Context,
@@ -353,7 +371,7 @@ fun SettingsHub(
                             Column {
                                 Text(myName.ifBlank { "Ton nom" }, color = SamchatColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
                                 Text(
-                                    ProfileStore.myStatus(context).ifBlank { if (lang == "en") "Add a status" else "Ajoute un statut" },
+                                    ProfileStore.myStatus(context).ifBlank { tr(lang, "profile_hint").substringBefore(",") },
                                     color = SamchatColors.Grey,
                                     fontSize = 14.sp
                                 )
@@ -445,14 +463,14 @@ fun SettingsHub(
                         HubButton(tr(lang, "myqr"), onClick = onShowQr)
                         Spacer(Modifier.height(10.dp))
                         HubButton(tr(lang, "scan"), onClick = onScan)
-                        HubLabel("${if (lang == "en") "MY CONTACTS" else "MES CONTACTS"} (${contacts.size})")
+                        HubLabel("${tr(lang, "contacts").uppercase()} (${contacts.size})")
                         if (contacts.isEmpty()) {
-                            Text(if (lang == "en") "No contact yet." else "Aucun contact pour l'instant.", color = SamchatColors.Grey, fontSize = 15.sp)
+                            Text("—", color = SamchatColors.Grey, fontSize = 15.sp)
                         } else {
                             contacts.forEach { c ->
                                 val online = peers.any { it.id == c.id }
                                 Text(
-                                    "@${MeshState.nameOf(c.id)}  ${if (online) "● à portée" else "○ hors de portée"}",
+                                    "@${MeshState.nameOf(c.id)}  ${if (online) "●" else "○"}",
                                     color = if (online) SamchatColors.Green else SamchatColors.Grey,
                                     fontSize = 16.sp,
                                     modifier = Modifier.padding(vertical = 6.dp)
@@ -492,7 +510,7 @@ fun SettingsHub(
                             Spacer(Modifier.height(8.dp))
                         }
                         Text(tr(lang, "lang_note"), color = SamchatColors.Grey, fontSize = 13.sp)
-                        HubLabel(if (lang == "en") "HELP" else "AIDE")
+                        HubLabel(tr(lang, "help").substringBefore(" ").uppercase())
                         Text(tr(lang, "help_body"), color = SamchatColors.White, fontSize = 15.sp)
                         HubLabel(tr(lang, "about"))
                         Text("Samchat, version $version", color = SamchatColors.White, fontSize = 15.sp)
