@@ -28,10 +28,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -54,7 +52,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -65,7 +62,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
-import com.example.meshchat.wifi.WifiAwareSupport
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
@@ -80,7 +76,6 @@ class VoiceRecorder(private val context: Context) {
     private var recorder: MediaRecorder? = null
     private var file: File? = null
 
-    /** Démarre l'enregistrement. Retourne false si le micro n'est pas disponible. */
     fun start(): Boolean {
         val out = File(context.cacheDir, "vocal_envoi.m4a")
         @Suppress("DEPRECATION")
@@ -104,7 +99,6 @@ class VoiceRecorder(private val context: Context) {
         }
     }
 
-    /** Arrête l'enregistrement et retourne le contenu du fichier, ou null si l'enregistrement a échoué. */
     fun stop(): ByteArray? {
         val rec = recorder ?: return null
         recorder = null
@@ -119,10 +113,8 @@ class VoiceRecorder(private val context: Context) {
     }
 
     companion object {
-        /** Identifie les vocaux joués par l'écran, dans le lecteur commun. */
         private val owner = Any()
 
-        /** Lance un vocal, ou l'arrête si c'est celui qui joue déjà. */
         fun play(path: String) {
             if (Playback.currentPath == path) {
                 Playback.stop()
@@ -133,10 +125,7 @@ class VoiceRecorder(private val context: Context) {
     }
 }
 
-/**
- * Enregistre le micro par segments d'une seconde. Chaque segment est un fichier audio complet,
- * remis à [onSegment] dès qu'il est fini, puis un nouveau segment démarre aussitôt.
- */
+/** Enregistre le micro par segments d'une seconde, pour la parole en direct. */
 private class LiveStreamer(
     private val context: Context,
     private val onSegment: (ByteArray) -> Unit
@@ -147,7 +136,6 @@ private class LiveStreamer(
     private var running = false
     private var counter = 0
 
-    /** Démarre le premier segment. Retourne false si le micro n'est pas disponible. */
     fun start(): Boolean {
         if (!startSegment()) return false
         running = true
@@ -167,7 +155,6 @@ private class LiveStreamer(
         }
     }
 
-    /** Arrête le live et envoie le dernier segment. */
     fun stop() {
         if (!running) return
         running = false
@@ -199,7 +186,6 @@ private class LiveStreamer(
         }
     }
 
-    /** Termine le segment en cours, lit son contenu, puis supprime le fichier. */
     private fun stopSegment(): ByteArray? {
         val rec = recorder ?: return null
         recorder = null
@@ -220,19 +206,16 @@ private class LiveStreamer(
     }
 }
 
-/** Réglages de l'écran (l'état du service vient de BleMeshManager). */
+/** État partagé de l'écran (l'état du service vient de BleMeshManager). */
 object AppState {
     var serviceOn by mutableStateOf(false)
     var runInBackground by mutableStateOf(true)
-    /** Live push-to-talk : maintenir le micro pour parler en direct. Gardé entre les lancements. */
     var liveOn by mutableStateOf(false)
-    /** Contact dont la discussion est ouverte (null : « Tous » ou aucune). Sert à signaler « Lu ». */
     var openChat: String? = null
 }
 
 class MainActivity : ComponentActivity() {
     private val permissions = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        // Le service démarre même si les notifications sont refusées : elles ne servent qu'à l'affichage
         startMeshService()
     }
 
@@ -246,17 +229,14 @@ class MainActivity : ComponentActivity() {
                 onRestart = { restartMeshService() }
             )
         }
-        // Le service démarre tout seul à l'ouverture, s'il ne tourne pas déjà
         if (BleMeshManager.instance == null) askPermissions()
     }
 
     override fun onResume() {
         super.onResume()
-        // Si le service tourne déjà (écran rouvert), l'interrupteur doit le montrer
         val manager = BleMeshManager.instance
         if (manager != null) {
             AppState.serviceOn = true
-            // La discussion ouverte est de nouveau visible : les messages en attente sont signalés « Lus »
             manager.openChatPeer = AppState.openChat
             AppState.openChat?.let { manager.markRead(it) }
         }
@@ -264,9 +244,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // L'écran n'est plus visible : on ne signale plus « Lu » automatiquement
         BleMeshManager.instance?.openChatPeer = null
-        // Si « Rester actif en arrière-plan » est désactivé, le service s'arrête quand l'app quitte l'écran
         if (!AppState.runInBackground && AppState.serviceOn) stopMeshService()
     }
 
@@ -277,9 +255,7 @@ class MainActivity : ComponentActivity() {
         } else {
             needed += Manifest.permission.ACCESS_FINE_LOCATION
         }
-        // Notifications : obligatoires à partir d'Android 13 pour afficher la notification du service
         if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.POST_NOTIFICATIONS
-        // Appareils à proximité : nécessaire pour le Wi-Fi Aware sur Android 13 et plus
         if (Build.VERSION.SDK_INT >= 33) needed += Manifest.permission.NEARBY_WIFI_DEVICES
 
         if (needed.all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }) {
@@ -299,27 +275,19 @@ class MainActivity : ComponentActivity() {
         AppState.serviceOn = false
     }
 
-    /** Arrête puis relance le service, pour qu'il relise les contacts sauvegardés (ex. après un scan de QR). */
     private fun restartMeshService() {
         stopMeshService()
         Handler(Looper.getMainLooper()).postDelayed({ startMeshService() }, 1000L)
     }
 }
 
-/** Identifiant de la conversation « Tous ». */
 private const val PUBLIC = "public"
-
-/** Premier octet d'un contenu envoyé en fragments : indique si c'est une photo ou un vocal. */
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
-
-/** Durée d'appui à partir de laquelle un appui devient du live. En dessous, c'est un appui bref (vocal classique). */
 private const val HOLD_MS = 350L
 
-/** Statut d'un envoi qui vient d'être lancé : privé = en attente de « Parti » puis des accusés, public = envoyé. */
 private fun initialStatus(target: String?): String = if (target == null) "✓ Envoyé" else "⏳ En attente"
 
-/** Titre affiché au-dessus d'une bulle : le nom du contact, ou anonXXXX tant qu'on ne le connaît pas. */
 private fun bubbleTitle(b: ChatBubble): String = when {
     b.mine -> "Moi"
     b.author == "photo" -> "Photo"
@@ -327,10 +295,6 @@ private fun bubbleTitle(b: ChatBubble): String = when {
     else -> "@${MeshState.nameOf(b.author)}"
 }
 
-/**
- * Réduit la photo pour l'envoi : 800 px au plus, JPEG qualité 75.
- * Une photo plus lourde que 250 Ko ne peut pas partir par Bluetooth : elle passe alors par Wi-Fi.
- */
 private fun compressPhoto(source: Bitmap): ByteArray {
     val scale = 800f / maxOf(source.width, source.height)
     val small = if (scale < 1f) {
@@ -341,10 +305,6 @@ private fun compressPhoto(source: Bitmap): ByteArray {
     return out.toByteArray()
 }
 
-/**
- * Forme d'onde estimée à partir du contenu du fichier audio : [bars] valeurs entre 0.2 et 1.
- * Ce n'est pas le volume réel de la voix, mais un aperçu visuel stable pour chaque vocal.
- */
 private fun waveformOf(path: String, bars: Int = 40): List<Float> = try {
     val bytes = File(path).readBytes()
     if (bytes.isEmpty()) {
@@ -367,7 +327,6 @@ private fun waveformOf(path: String, bars: Int = 40): List<Float> = try {
     List(bars) { 0.3f }
 }
 
-/** Durée d'un fichier audio, en millisecondes. 0 si elle ne peut pas être lue. */
 private fun durationMsOf(path: String): Long {
     val retriever = MediaMetadataRetriever()
     return try {
@@ -380,18 +339,13 @@ private fun durationMsOf(path: String): Long {
     }
 }
 
-/** Affiche une durée au format m:ss. */
 private fun formatMs(ms: Long): String {
     val s = (ms / 1000).coerceAtLeast(0)
     return "%d:%02d".format(s / 60, s % 60)
 }
 
-/**
- * Bulle de vocal, façon WhatsApp : bouton lecture, barres de forme d'onde qui se colorent pendant la lecture,
- * temps écoulé et durée totale.
- */
 @Composable
-private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color) {
+private fun VoiceBubble(path: String, green: Color, grey: Color) {
     val bars = remember(path) { waveformOf(path) }
     val total = remember(path) { durationMsOf(path) }
     val playing = Playback.currentPath == path
@@ -414,14 +368,10 @@ private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(220.dp)) {
         Box(
-            modifier = Modifier
-                .size(36.dp)
-                .clip(CircleShape)
-                .background(green)
-                .clickable { VoiceRecorder.play(path) },
+            modifier = Modifier.size(40.dp).clip(CircleShape).background(green).clickable { VoiceRecorder.play(path) },
             contentAlignment = Alignment.Center
         ) {
-            Text(if (playing) "■" else "▶", color = Color.White, fontSize = 14.sp)
+            Text(if (playing) "■" else "▶", color = Color.White, fontSize = 15.sp)
         }
         Spacer(Modifier.width(8.dp))
         Column(Modifier.weight(1f)) {
@@ -439,22 +389,14 @@ private fun VoiceBubble(path: String, green: Color, grey: Color, inkColor: Color
                 }
             }
             Row {
-                Text(
-                    if (playing) formatMs(elapsed) else "0:00",
-                    color = grey,
-                    fontSize = 10.sp,
-                    fontFamily = FontFamily.Monospace
-                )
+                Text(if (playing) formatMs(elapsed) else "0:00", color = grey, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
                 Spacer(Modifier.weight(1f))
-                Text(formatMs(total), color = grey, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text(formatMs(total), color = grey, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             }
         }
     }
 }
 
-/**
- * Photo de profil ronde. Sans photo : un rond gris avec une lettre (ou « ? » si l'auteur est inconnu).
- */
 @Composable
 private fun AvatarDot(bitmap: Bitmap?, label: String, size: Dp, bg: Color, ink: Color) {
     if (bitmap != null) {
@@ -465,19 +407,12 @@ private fun AvatarDot(bitmap: Bitmap?, label: String, size: Dp, bg: Color, ink: 
             modifier = Modifier.size(size).clip(CircleShape)
         )
     } else {
-        Box(
-            modifier = Modifier.size(size).clip(CircleShape).background(bg),
-            contentAlignment = Alignment.Center
-        ) {
+        Box(Modifier.size(size).clip(CircleShape).background(bg), contentAlignment = Alignment.Center) {
             Text(label, color = ink, fontSize = (size.value * 0.45f).sp, fontWeight = FontWeight.Bold)
         }
     }
 }
 
-/**
- * Enregistre un fichier de l'app dans Téléchargements/Samchat, pour qu'il reste visible.
- * Retourne le nom du fichier enregistré, ou null en cas d'échec.
- */
 private fun saveToDownloads(context: Context, source: String, mime: String, prefix: String): String? {
     val src = File(source)
     if (!src.exists()) return null
@@ -505,14 +440,11 @@ private fun saveToDownloads(context: Context, source: String, mime: String, pref
     }
 }
 
-/** Informations de distribution de cette copie, affichées dans les outils de debug. */
 private class DistributionInfo(val version: String, val installer: String, val fingerprint: String)
 
-/** Lit la version, l'installateur et l'empreinte SHA-256 du certificat qui a signé cette copie. */
 private fun readDistribution(context: Context): DistributionInfo {
     val pm = context.packageManager
     val pkg = context.packageName
-
     val version = try {
         @Suppress("DEPRECATION")
         val info = pm.getPackageInfo(pkg, 0)
@@ -521,7 +453,6 @@ private fun readDistribution(context: Context): DistributionInfo {
     } catch (e: Exception) {
         "indisponible"
     }
-
     val installer = try {
         val name = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             pm.getInstallSourceInfo(pkg).installingPackageName
@@ -533,15 +464,12 @@ private fun readDistribution(context: Context): DistributionInfo {
     } catch (e: Exception) {
         "inconnue"
     }
-
     val fingerprint = signingBytes(context)?.let { bytes ->
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString(":") { "%02X".format(it) }
     } ?: "indisponible"
-
     return DistributionInfo(version, installer, fingerprint)
 }
 
-/** Certificat qui a signé l'application, en octets. Null si Android ne le fournit pas. */
 @Suppress("DEPRECATION")
 private fun signingBytes(context: Context): ByteArray? = try {
     val pm = context.packageManager
@@ -557,13 +485,11 @@ private fun signingBytes(context: Context): ByteArray? = try {
     null
 }
 
-/** Copie un texte dans le presse-papiers du téléphone. */
 private fun copyToClipboard(context: Context, text: String) {
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     cm.setPrimaryClip(ClipData.newPlainText("empreinte", text))
 }
 
-/** Icône de debug : un insecte orange, dessiné à la main (comme dans bitchat). */
 @Composable
 private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     Canvas(modifier = Modifier.size(iconSize)) {
@@ -582,23 +508,13 @@ private fun BugIcon(color: Color, iconSize: Dp = 28.dp) {
     }
 }
 
-/**
- * Bouton micro. Appui bref : vocal classique (démarrer, puis arrêter et envoyer).
- * Avec le live activé : appui maintenu = parler en direct, le relâcher arrête.
- */
 @Composable
-private fun MicButton(
-    recording: Boolean,
-    live: Boolean,
-    onTap: () -> Unit,
-    onHoldStart: () -> Unit,
-    onHoldEnd: () -> Unit
-) {
-    val bg = if (recording) Color(0xFFDC2626) else Color.White
+private fun MicButton(recording: Boolean, live: Boolean, onTap: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
+    val bg = if (recording) SamchatColors.Danger else Color.White
     val fg = if (recording) Color.White else Color.Black
     Box(
         modifier = Modifier
-            .size(44.dp)
+            .size(52.dp)
             .clip(CircleShape)
             .background(bg)
             .pointerInput(live) {
@@ -621,24 +537,12 @@ private fun MicButton(
             },
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(22.dp)) {
+        Canvas(modifier = Modifier.size(24.dp)) {
             val w = size.width
             val h = size.height
-            drawRoundRect(
-                color = fg,
-                topLeft = Offset(w * 0.30f, 0f),
-                size = Size(w * 0.40f, h * 0.56f),
-                cornerRadius = CornerRadius(w * 0.20f)
-            )
-            drawArc(
-                color = fg,
-                startAngle = 0f,
-                sweepAngle = 180f,
-                useCenter = false,
-                topLeft = Offset(w * 0.15f, h * 0.30f),
-                size = Size(w * 0.70f, h * 0.50f),
-                style = Stroke(width = w * 0.08f)
-            )
+            drawRoundRect(color = fg, topLeft = Offset(w * 0.30f, 0f), size = Size(w * 0.40f, h * 0.56f), cornerRadius = CornerRadius(w * 0.20f))
+            drawArc(color = fg, startAngle = 0f, sweepAngle = 180f, useCenter = false,
+                topLeft = Offset(w * 0.15f, h * 0.30f), size = Size(w * 0.70f, h * 0.50f), style = Stroke(width = w * 0.08f))
             drawLine(fg, Offset(w * 0.5f, h * 0.80f), Offset(w * 0.5f, h * 0.95f), strokeWidth = w * 0.08f)
             drawLine(fg, Offset(w * 0.30f, h * 0.95f), Offset(w * 0.70f, h * 0.95f), strokeWidth = w * 0.08f)
         }
@@ -646,51 +550,12 @@ private fun MicButton(
 }
 
 @Composable
-private fun CircleButton(label: String, background: Color, textColor: Color, size: Dp = 44.dp, onClick: () -> Unit) {
+private fun CircleButton(label: String, background: Color, textColor: Color, size: Dp = 52.dp, onClick: () -> Unit) {
     Box(
         modifier = Modifier.size(size).clip(CircleShape).background(background).clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = textColor, fontSize = 18.sp)
-    }
-}
-
-/**
- * Bouton de choix de conversation : photo du contact (si connue) à gauche du nom.
- * Un contact hors de portée apparaît en grisé.
- */
-@Composable
-private fun ChatChip(
-    label: String,
-    selected: Boolean,
-    online: Boolean,
-    green: Color,
-    inkColor: Color,
-    avatar: Bitmap?,
-    onClick: () -> Unit
-) {
-    Button(
-        onClick = onClick,
-        colors = ButtonDefaults.buttonColors(
-            containerColor = if (selected) green else inkColor.copy(alpha = 0.12f)
-        ),
-        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
-    ) {
-        val textColor = when {
-            selected -> Color.White
-            online -> inkColor
-            else -> inkColor.copy(alpha = 0.4f)
-        }
-        if (avatar != null) {
-            Image(
-                bitmap = avatar.asImageBitmap(),
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.size(18.dp).clip(CircleShape)
-            )
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(label, color = textColor, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+        Text(label, color = textColor, fontSize = 20.sp)
     }
 }
 
@@ -699,20 +564,17 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
-    /** Vrai : une conversation est ouverte. Faux : on voit la liste des discussions. */
     var inChat by remember { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var showMyQr by remember { mutableStateOf(false) }
-    /** Message dont la suppression est demandée (appui long sur la bulle). */
     var bubbleToDelete by remember { mutableStateOf<ChatBubble?>(null) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
     var liveHolding by remember { mutableStateOf(false) }
     var liveStreamer by remember { mutableStateOf<LiveStreamer?>(null) }
     var nameInput by remember { mutableStateOf("") }
-    var statusInput by remember { mutableStateOf("") }
 
     val chatState = rememberLazyListState()
     val context = LocalContext.current
@@ -722,10 +584,8 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         mutableStateOf(ProfileStore.myAvatar(context)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) })
     }
     val recorder = remember { VoiceRecorder(context) }
-    val wifiStatus = remember { WifiAwareSupport.status(context) }
     val dist = remember { readDistribution(context) }
 
-    // Données partagées avec le service : elles restent là quand l'écran se ferme
     val peers = MeshState.peers
     val contacts = MeshState.contacts
     val pseudo = MeshState.pseudo
@@ -733,15 +593,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val bubbles = MeshState.bubbles
     val counts = MeshState.counts
     val displayName = if (myName.isNotBlank()) myName else pseudo
-
-    // Rafraîchissement : ce compteur change dès qu'un profil de contact est accepté
     val profileTick = MeshState.profileTick
 
     fun log(line: String) = MeshState.addJournal(line)
 
-    fun c(key: String): Int = counts[key] ?: 0
-
-    /** Enregistre le nom choisi. Il sera envoyé aux téléphones rencontrés. */
     fun saveName(raw: String) {
         val clean = raw.trim().take(20)
         if (clean.isBlank()) return
@@ -750,14 +605,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         MeshState.refresh()
     }
 
-    /** Enregistre le statut, puis l'envoie à chaque contact. Seulement à l'appui sur le bouton. */
-    fun saveStatus() {
-        ProfileStore.setMyStatus(context, statusInput)
+    fun saveStatus(text: String) {
+        ProfileStore.setMyStatus(context, text)
         BleMeshManager.instance?.broadcastProfile()
         log("Statut enregistré")
     }
 
-    // Photo de profil : choisie dans la galerie, recadrée et réduite, puis envoyée aux contacts
     val avatarLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val bitmap = uri?.let {
             context.contentResolver.openInputStream(it)?.use { stream ->
@@ -775,26 +628,23 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    // Thème : « système » suit le réglage du téléphone
+    // Thème : sombre, vert et blanc. « système » suit le téléphone.
     val dark = when (theme) {
         "clair" -> false
         "sombre" -> true
         else -> isSystemInDarkTheme()
     }
-    val green = if (dark) Color(0xFF6EE7A0) else Color(0xFF3F7D3F)
-    val readGreen = if (dark) Color(0xFF4ADE80) else Color(0xFF16A34A)
-    val blue = if (dark) Color(0xFF93C5FD) else Color(0xFF2563EB)
-    val orange = Color(0xFFF59E0B)
-    val grey = Color(0xFF9CA3AF)
-    val bgColor = if (dark) Color(0xFF09090B) else Color(0xFFF6F7F6)
-    val inkColor = if (dark) Color.White else Color(0xFF111827)
-    val mineBg = if (dark) Color(0xFF14532D) else Color(0xFFDCFCE7)
-    val otherBg = if (dark) Color(0xFF1F2937) else Color(0xFFF1F5F9)
-    val inputBg = if (dark) Color(0xFF1F2937) else Color(0xFFF3F4F6)
-    val lightGrey = if (dark) Color(0xFF374151) else Color(0xFFE5E7EB)
+    val green = SamchatColors.Green
+    val readGreen = Color(0xFF4ADE80)
+    val blue = Color(0xFF93C5FD)
+    val grey = SamchatColors.Grey
+    val bgColor = if (dark) SamchatColors.Background else Color(0xFFF6F7F6)
+    val inkColor = if (dark) SamchatColors.White else Color(0xFF111827)
+    val mineBg = SamchatColors.GreenSoft.copy(alpha = 0.35f)
+    val otherBg = SamchatColors.Card
+    val inputBg = SamchatColors.Field
+    val lightGrey = SamchatColors.Field
 
-    // « Lu » seulement quand la conversation est vraiment ouverte (pas quand on est sur la liste).
-    // Les messages déjà reçus et pas encore lus sont signalés à l'ouverture.
     LaunchedEffect(selectedChat, AppState.serviceOn, inChat) {
         val peer = if (inChat && selectedChat != PUBLIC) selectedChat else null
         AppState.openChat = peer
@@ -803,12 +653,10 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (peer != null) manager?.markRead(peer)
     }
 
-    // Appareil photo : la photo prise devient l'aperçu, elle n'est pas encore envoyée
     val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicturePreview()) { bitmap ->
         if (bitmap != null) pendingPhoto = bitmap
     }
 
-    // Galerie : l'image choisie devient l'aperçu
     val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val bitmap = uri?.let {
             context.contentResolver.openInputStream(it)?.use { stream ->
@@ -818,14 +666,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (bitmap != null) pendingPhoto = bitmap
     }
 
-    // Messages de la conversation choisie
     val visible = bubbles.filter { it.chat == selectedChat }
 
     LaunchedEffect(visible.size) {
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    /** Envoie le texte et/ou la photo (au téléphone choisi, ou à tous). */
     fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
@@ -836,7 +682,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (draft.isNotBlank()) {
             val sent = manager.sendMessage(draft, target)
             if (sent > 0) {
-                // Pour un message privé, on garde son identifiant pour recevoir ses accusés
                 MeshState.addBubble(
                     ChatBubble(true, "moi", draft, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
                 )
@@ -854,7 +699,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Démarre l'enregistrement du vocal. */
     fun startVoice() {
         if (BleMeshManager.instance == null) {
             log("Service non activé : activez le service")
@@ -868,7 +712,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Arrête l'enregistrement et envoie le vocal au téléphone choisi (ou à tous). */
     fun stopAndSendVoice() {
         recording = false
         val bytes: ByteArray? = recorder.stop()
@@ -889,7 +732,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    // Permission du micro : demandée la première fois qu'on appuie sur le micro
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) {
             log("Micro refusé dans les réglages du téléphone")
@@ -900,7 +742,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Un appui bref sur le micro : démarre le vocal classique, ou l'arrête et l'envoie. */
     fun onMicTap() {
         if (recording) {
             stopAndSendVoice()
@@ -911,7 +752,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Démarre le live : le micro est envoyé par segments d'une seconde au contact choisi. */
     fun startLive() {
         if (BleMeshManager.instance == null) {
             log("Service non activé : activez le service")
@@ -919,7 +759,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
         val target = selectedChat
         if (target == PUBLIC) {
-            log("Live : choisissez un contact dans la liste")
+            log("Live : choisissez un contact")
             return
         }
         if (MeshState.peers.none { it.id == target }) {
@@ -930,9 +770,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             micPermission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        val streamer = LiveStreamer(context) { bytes ->
-            BleMeshManager.instance?.sendLive(bytes, target)
-        }
+        val streamer = LiveStreamer(context) { bytes -> BleMeshManager.instance?.sendLive(bytes, target) }
         if (streamer.start()) {
             liveStreamer = streamer
             liveHolding = true
@@ -942,7 +780,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    /** Arrête le live quand le bouton est relâché. */
     fun stopLive() {
         val streamer = liveStreamer ?: return
         liveStreamer = null
@@ -951,8 +788,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         log("Live : fin")
     }
 
-    // Scan d'un QR code : le contact est enregistré, puis le service redémarre pour le prendre en compte.
-    // L'orientation n'est pas verrouillée : sinon certains téléphones affichent la caméra à l'envers.
     val scanOptions = ScanOptions()
         .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
         .setPrompt("Visez le QR code de l'autre téléphone")
@@ -977,7 +812,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         if (granted) scanLauncher.launch(scanOptions) else log("Caméra refusée dans les réglages du téléphone")
     }
 
-    /** Ouvre la caméra pour scanner un QR code, après avoir demandé la permission si besoin. */
     fun startScan() {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             scanLauncher.launch(scanOptions)
@@ -986,51 +820,40 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         }
     }
 
-    // Premier lancement : le nom est demandé, et il est obligatoire
+    // Premier lancement : le nom est demandé
     if (myName.isBlank()) {
         AlertDialog(
             onDismissRequest = { },
             title = { Text("Bienvenue sur Samchat") },
             text = {
                 Column {
-                    Text("Choisis le nom que verront les autres téléphones.", fontSize = 14.sp)
+                    Text("Choisis le nom que verront les autres téléphones.", fontSize = 16.sp)
                     Spacer(Modifier.height(12.dp))
-                    TextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it.take(20) },
-                        singleLine = true,
-                        placeholder = { Text("ton nom") }
-                    )
+                    TextField(value = nameInput, onValueChange = { nameInput = it.take(20) }, singleLine = true, placeholder = { Text("ton nom") })
                 }
             },
             confirmButton = {
-                TextButton(onClick = { saveName(nameInput) }, enabled = nameInput.isNotBlank()) {
-                    Text("Continuer")
-                }
+                TextButton(onClick = { saveName(nameInput) }, enabled = nameInput.isNotBlank()) { Text("Continuer", fontSize = 16.sp) }
             }
         )
     }
 
-    // Suppression d'un message, après un appui long (comme WhatsApp)
     bubbleToDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { bubbleToDelete = null },
             title = { Text("Supprimer ce message ?") },
-            text = { Text("Le message sera retiré de ce téléphone. Il ne sera pas supprimé chez les autres.") },
+            text = { Text("Le message sera retiré de ce téléphone seulement.") },
             confirmButton = {
                 TextButton(onClick = {
                     MeshState.deleteBubble(target)
                     bubbleToDelete = null
                     log("Message supprimé")
-                }) { Text("Supprimer", color = Color(0xFFDC2626)) }
+                }) { Text("Supprimer", color = SamchatColors.Danger, fontSize = 16.sp) }
             },
-            dismissButton = {
-                TextButton(onClick = { bubbleToDelete = null }) { Text("Annuler") }
-            }
+            dismissButton = { TextButton(onClick = { bubbleToDelete = null }) { Text("Annuler", fontSize = 16.sp) } }
         )
     }
 
-    // Mon QR code : l'autre personne le scanne pour t'ajouter
     if (showMyQr) {
         AlertDialog(
             onDismissRequest = { showMyQr = false },
@@ -1042,15 +865,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         val qr = remember(content) { QrShare.bitmap(content) }
                         Image(bitmap = qr.asImageBitmap(), contentDescription = "Mon QR code", modifier = Modifier.size(240.dp))
                         Spacer(Modifier.height(8.dp))
-                        Text("L'autre personne le scanne pour t'ajouter.", fontSize = 12.sp, color = grey)
+                        Text("L'autre personne le scanne pour t'ajouter.", fontSize = 14.sp, color = grey)
                     } else {
-                        Text("Le QR code sera disponible après le premier démarrage du service.", fontSize = 13.sp)
+                        Text("Le QR code sera disponible après le premier démarrage du service.", fontSize = 15.sp)
                     }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showMyQr = false }) { Text("Fermer") }
-            }
+            confirmButton = { TextButton(onClick = { showMyQr = false }) { Text("Fermer", fontSize = 16.sp) } }
         )
     }
 
@@ -1060,76 +881,43 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             title = { Text("Ajouter une photo") },
             text = { Text("Que voulez-vous faire ?") },
             confirmButton = {
-                TextButton(onClick = { showPicker = false; cameraLauncher.launch(null) }) { Text("Prendre une photo") }
+                TextButton(onClick = { showPicker = false; cameraLauncher.launch(null) }) { Text("Prendre une photo", fontSize = 16.sp) }
             },
             dismissButton = {
-                TextButton(onClick = { showPicker = false; galleryLauncher.launch("image/*") }) { Text("Choisir une image") }
+                TextButton(onClick = { showPicker = false; galleryLauncher.launch("image/*") }) { Text("Choisir une image", fontSize = 16.sp) }
             }
         )
     }
 
-    // Outils de debug : compteurs et distribution de cette copie
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    BugIcon(orange, 26.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text("outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
-                }
-            },
+            title = { Text("Outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Pseudo : /@$displayName", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) "actif" else "arrêté"}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text(wifiStatus, fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Pairs Wi-Fi Aware : ${MeshState.wifiPeers}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Messages reçus : ${counts["in_text"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Envois réussis : ${counts["out_ok"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("Échecs : ${counts["fail"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
-                    Text("Messages reçus : ${c("in_text")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Fichiers reçus : ${c("in_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Envois réussis : ${c("out_ok")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Fichiers envoyés : ${c("out_file")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Relais : ${c("relay")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Sans pair : ${c("no_peer")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Échecs : ${c("fail")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-
-                    Spacer(Modifier.height(14.dp))
-                    Text("DISTRIBUTION", color = orange, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Text("Version : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                    Text("Installée depuis : ${dist.installer}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
-                    Text("Empreinte du certificat (SHA-256) :", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     Text(dist.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-                    TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) {
-                        Text("Copier l'empreinte", fontSize = 13.sp)
-                    }
-
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        "Lecture : « Envois réussis » augmente quand un pair confirme la réception. « Échecs » indique le problème dans le journal.",
-                        color = grey,
-                        fontSize = 12.sp
-                    )
+                    TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) { Text("Copier l'empreinte", fontSize = 14.sp) }
                 }
             },
-            confirmButton = {
-                TextButton(onClick = { showDebug = false }) { Text("Fermer") }
-            },
-            dismissButton = {
-                TextButton(onClick = { MeshState.counts.clear() }) { Text("Remettre à zéro") }
-            }
+            confirmButton = { TextButton(onClick = { showDebug = false }) { Text("Fermer", fontSize = 16.sp) } },
+            dismissButton = { TextButton(onClick = { MeshState.counts.clear() }) { Text("Remettre à zéro", fontSize = 16.sp) } }
         )
     }
 
-    // Paramètres : écran plein écran (voir SettingsUi.kt)
+    // Réglages : écran plein écran, ouvert par le ⋮ en haut à droite de l'accueil
     if (showSettings) {
-        SettingsPanel(
+        SettingsScreen(
             context = context,
             myName = myName,
             myAvatar = myAvatar,
-            myIdText = BleMeshManager.instance?.myId?.joinToString("") { "%02x".format(it) }?.take(16) ?: "—",
             peers = peers,
             contacts = contacts,
             theme = theme,
@@ -1137,20 +925,19 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             installer = dist.installer,
             onTheme = { theme = it },
             onSaveName = { saveName(it) },
-            onSaveStatus = { statusInput = it; saveStatus() },
+            onSaveStatus = { saveStatus(it) },
             onChangePhoto = { avatarLauncher.launch("image/*") },
             onShowQr = { showSettings = false; showMyQr = true },
             onScan = { showSettings = false; startScan() },
             onShare = { if (!ShareApp.share(context)) log("Partage impossible") },
             onDebug = { showSettings = false; showDebug = true },
-            onClose = { showSettings = false }
+            onBack = { showSettings = false }
         )
+        return
     }
 
-    // Le bouton retour du téléphone ferme la conversation et revient à la liste
     BackHandler(enabled = inChat) { inChat = false }
 
-    // Écran d'accueil : liste des discussions (voir HomeUi.kt)
     if (!inChat) {
         ChatListScreen(
             context = context,
@@ -1160,11 +947,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             profileTick = profileTick,
             serviceOn = AppState.serviceOn,
             onOpen = { id -> selectedChat = id; inChat = true },
-            onSettings = {
-                nameInput = myName
-                statusInput = ProfileStore.myStatus(context)
-                showSettings = true
-            },
+            onSettings = { showSettings = true },
             onShowQr = { showMyQr = true },
             onScan = { startScan() }
         )
@@ -1173,108 +956,63 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
 
     val canSend = draft.isNotBlank() || pendingPhoto != null
 
+    // Conversation épurée : ←, nom du contact, messages, barre de saisie
     Surface(modifier = Modifier.fillMaxSize(), color = bgColor) {
-        Column(Modifier.fillMaxSize().padding(horizontal = 16.dp, vertical = 12.dp)) {
+        Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 10.dp)) {
 
-            // En-tête : retour, /@nom, mesh, pairs et bouton menu
             Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                TextButton(onClick = { inChat = false }) {
-                    Text("←", color = inkColor, fontSize = 24.sp)
+                TextButton(onClick = { inChat = false }, modifier = Modifier.size(52.dp)) {
+                    Text("←", color = inkColor, fontSize = 26.sp)
                 }
-                Spacer(Modifier.width(4.dp))
-                Text(
-                    "/@$displayName",
-                    color = green,
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold,
-                    fontFamily = FontFamily.Monospace,
-                    maxLines = 1,
-                    modifier = Modifier.weight(1f)
-                )
-                Text("📡 mesh", color = blue, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.width(10.dp))
-                Text("👥 ${peers.size}", color = grey, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                TextButton(onClick = {
-                    nameInput = myName
-                    statusInput = ProfileStore.myStatus(context)
-                    showSettings = true
-                }) {
-                    Text("⋮", color = inkColor, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.width(6.dp))
+                val contactAvatar = if (selectedChat != PUBLIC) {
+                    remember(selectedChat, profileTick) { ProfileStore.avatarBitmapOf(context, selectedChat) }
+                } else null
+                if (contactAvatar != null) {
+                    Image(
+                        bitmap = contactAvatar.asImageBitmap(),
+                        contentDescription = "Photo de profil",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(44.dp).clip(CircleShape)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (selectedChat == PUBLIC) "Tous" else "@${MeshState.nameOf(selectedChat)}",
+                        color = inkColor,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1
+                    )
+                    val status = if (selectedChat != PUBLIC) remember(selectedChat, profileTick) {
+                        ProfileStore.statusOf(context, selectedChat)
+                    } else ""
+                    Text(
+                        if (selectedChat == PUBLIC) "${peers.size} à portée" else status,
+                        color = grey,
+                        fontSize = 13.sp,
+                        fontStyle = FontStyle.Italic,
+                        maxLines = 1
+                    )
                 }
             }
 
             Spacer(Modifier.height(8.dp))
 
-            // Choix de la conversation : Tous, puis chaque contact avec sa photo (grisé s'il est hors de portée)
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
-                item {
-                    ChatChip("Tous", selectedChat == PUBLIC, true, green, inkColor, null) { selectedChat = PUBLIC }
-                }
-                items(contacts) { contact ->
-                    // Lit profileTick pour se recomposer quand une photo ou un statut arrive
-                    val avatar = remember(contact.id, profileTick) {
-                        ProfileStore.avatarBitmapOf(context, contact.id)
-                    }
-                    ChatChip(
-                        "@${MeshState.nameOf(contact.id)}",
-                        selectedChat == contact.id,
-                        peers.any { it.id == contact.id },
-                        green,
-                        inkColor,
-                        avatar
-                    ) { selectedChat = contact.id }
-                }
-            }
-
-            Spacer(Modifier.height(6.dp))
-
-            // Titre de la conversation affichée
-            Text(
-                if (selectedChat == PUBLIC) "Discussion : tous" else "Privé avec @${MeshState.nameOf(selectedChat)}",
-                color = grey,
-                fontSize = 12.sp,
-                fontFamily = FontFamily.Monospace
-            )
-            if (selectedChat != PUBLIC) {
-                val contactAvatar = remember(selectedChat, profileTick) {
-                    ProfileStore.avatarBitmapOf(context, selectedChat)
-                }
-                val status = remember(selectedChat, profileTick) {
-                    ProfileStore.statusOf(context, selectedChat)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    contactAvatar?.let {
-                        Image(
-                            bitmap = it.asImageBitmap(),
-                            contentDescription = "Photo de profil",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.size(28.dp).clip(CircleShape)
-                        )
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    if (status.isNotBlank()) {
-                        Text(status, color = inkColor, fontSize = 11.sp, fontStyle = FontStyle.Italic)
-                    }
-                }
-            }
-
-            // Conversation : message « Aucun appareil détecté » s'il n'y a ni contact ni message, sinon les bulles
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
-                if (visible.isEmpty() && contacts.isEmpty()) {
+                if (visible.isEmpty()) {
                     Column(
                         modifier = Modifier.fillMaxSize().padding(top = 40.dp),
                         horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Text("👥", fontSize = 40.sp)
-                        Spacer(Modifier.height(8.dp))
-                        Text("Aucun appareil détecté", color = inkColor, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                        Text("Aucun message", color = inkColor, fontSize = 18.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(4.dp))
-                        Text("Activez Samchat sur un autre téléphone à proximité.", color = grey, fontSize = 13.sp)
+                        Text("Écris ou envoie un vocal pour commencer.", color = grey, fontSize = 15.sp)
                     }
                 } else {
                     LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
                         items(visible) { b ->
-                            // Photo de profil de l'auteur : la mienne pour mes messages, sinon celle de l'expéditeur
                             val unknownAuthor = !b.mine && (b.author == "photo" || b.author == "vocal")
                             val avatarBmp = remember(b.mine, b.author, profileTick, myAvatar) {
                                 if (b.mine) myAvatar
@@ -1286,88 +1024,77 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                 unknownAuthor -> "?"
                                 else -> MeshState.nameOf(b.author).take(1).uppercase()
                             }
-                            val bubble: @Composable () -> Unit = {
-                                Surface(
-                                    color = if (b.mine) mineBg else otherBg,
-                                    shape = RoundedCornerShape(16.dp),
-                                    // Appui long : proposer la suppression du message
-                                    modifier = Modifier.pointerInput(b) {
-                                        detectTapGestures(onLongPress = { bubbleToDelete = b })
-                                    }
-                                ) {
-                                    Column(Modifier.padding(10.dp)) {
-                                        Text(bubbleTitle(b), color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                        b.image?.let { img ->
-                                            Image(
-                                                bitmap = img.asImageBitmap(),
-                                                contentDescription = "Photo",
-                                                contentScale = ContentScale.Fit,
-                                                modifier = Modifier.size(240.dp)
-                                            )
-                                        }
-                                        b.audio?.let { path ->
-                                            Spacer(Modifier.height(4.dp))
-                                            VoiceBubble(path, green, grey, inkColor)
-                                            Text(
-                                                "⬇ Enregistrer le vocal",
-                                                color = blue,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable {
-                                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                                    log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                }.padding(vertical = 4.dp)
-                                            )
-                                        }
-                                        // Bouton de téléchargement : copie la photo dans Téléchargements/Samchat
-                                        b.imagePath?.let { path ->
-                                            Text(
-                                                "⬇ Enregistrer la photo",
-                                                color = blue,
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                modifier = Modifier.clickable {
-                                                    val name = saveToDownloads(context, path, "image/jpeg", "photo")
-                                                    log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
-                                                }.padding(vertical = 4.dp)
-                                            )
-                                        }
-                                        Text(b.text, color = inkColor, fontSize = 15.sp)
-                                        Row(verticalAlignment = Alignment.CenterVertically) {
-                                            Text(
-                                                b.time,
-                                                color = grey,
-                                                fontSize = 10.sp,
-                                                fontFamily = FontFamily.Monospace
-                                            )
-                                            // Le statut devient vert et en gras quand le message est lu
-                                            b.status?.let { s ->
-                                                val read = s.contains("Lu")
-                                                Text(
-                                                    "  $s",
-                                                    color = if (read) readGreen else grey,
-                                                    fontSize = if (read) 11.sp else 10.sp,
-                                                    fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
-                                                    fontFamily = FontFamily.Monospace
-                                                )
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                             Box(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
                                 contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
                             ) {
                                 Row(verticalAlignment = Alignment.Top) {
                                     if (!b.mine) {
-                                        AvatarDot(avatarBmp, initial, 30.dp, lightGrey, inkColor)
+                                        AvatarDot(avatarBmp, initial, 34.dp, lightGrey, inkColor)
                                         Spacer(Modifier.width(6.dp))
                                     }
-                                    bubble()
+                                    Surface(
+                                        color = if (b.mine) mineBg else otherBg,
+                                        shape = RoundedCornerShape(18.dp),
+                                        modifier = Modifier.pointerInput(b) {
+                                            detectTapGestures(onLongPress = { bubbleToDelete = b })
+                                        }
+                                    ) {
+                                        Column(Modifier.padding(12.dp)) {
+                                            b.image?.let { img ->
+                                                Image(
+                                                    bitmap = img.asImageBitmap(),
+                                                    contentDescription = "Photo",
+                                                    contentScale = ContentScale.Fit,
+                                                    modifier = Modifier.size(240.dp)
+                                                )
+                                            }
+                                            b.audio?.let { path ->
+                                                VoiceBubble(path, green, grey)
+                                                Text(
+                                                    "⬇ Enregistrer le vocal",
+                                                    color = blue,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.clickable {
+                                                        val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                                        log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                    }.padding(vertical = 6.dp)
+                                                )
+                                            }
+                                            b.imagePath?.let { path ->
+                                                Text(
+                                                    "⬇ Enregistrer la photo",
+                                                    color = blue,
+                                                    fontSize = 14.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    modifier = Modifier.clickable {
+                                                        val name = saveToDownloads(context, path, "image/jpeg", "photo")
+                                                        log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else "Enregistrement impossible")
+                                                    }.padding(vertical = 6.dp)
+                                                )
+                                            }
+                                            if (b.text.isNotEmpty() && b.audio == null && b.image == null) {
+                                                Text(b.text, color = inkColor, fontSize = 17.sp)
+                                            }
+                                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                                Text(b.time, color = grey, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                                b.status?.let { s ->
+                                                    val read = s.contains("Lu")
+                                                    Text(
+                                                        "  $s",
+                                                        color = if (read) readGreen else grey,
+                                                        fontSize = if (read) 13.sp else 12.sp,
+                                                        fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
+                                                        fontFamily = FontFamily.Monospace
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
                                     if (b.mine) {
                                         Spacer(Modifier.width(6.dp))
-                                        AvatarDot(avatarBmp, initial, 30.dp, lightGrey, inkColor)
+                                        AvatarDot(avatarBmp, initial, 34.dp, lightGrey, inkColor)
                                     }
                                 }
                             }
@@ -1376,45 +1103,44 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 }
             }
 
-            // Journal réduit : les 3 dernières lignes, en petit
             Text(
-                journal.takeLast(3).joinToString("\n") { "> $it" },
+                journal.takeLast(2).joinToString("\n") { "> $it" },
                 color = grey,
                 fontSize = 11.sp,
                 fontFamily = FontFamily.Monospace,
-                maxLines = 3
+                maxLines = 2
             )
 
             Spacer(Modifier.height(6.dp))
 
-            // Aperçu de la photo choisie, avant envoi
             pendingPhoto?.let { photo ->
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                    Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(56.dp))
+                    Image(bitmap = photo.asImageBitmap(), contentDescription = "Aperçu", modifier = Modifier.size(60.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("Photo prête : appuyez sur ➤", color = inkColor, fontSize = 12.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { pendingPhoto = null }) { Text("Retirer") }
+                    Text("Photo prête : appuie sur ➤", color = inkColor, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { pendingPhoto = null }) { Text("Retirer", fontSize = 15.sp) }
                 }
                 Spacer(Modifier.height(4.dp))
             }
 
-            // Barre de saisie arrondie
             Surface(
-                shape = RoundedCornerShape(28.dp),
+                shape = RoundedCornerShape(30.dp),
                 color = inputBg,
-                border = BorderStroke(1.dp, Color(0xFFD1D5DB)),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
+                    modifier = Modifier.padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 4.dp)
                 ) {
+                    CircleButton("📎", SamchatColors.Card, inkColor, 48.dp) { showPicker = true }
+                    Spacer(Modifier.width(6.dp))
                     TextField(
                         value = draft,
                         onValueChange = { draft = it },
                         modifier = Modifier.weight(1f),
-                        placeholder = { Text("écrire un message…", color = grey) },
+                        placeholder = { Text("Écrire", color = grey, fontSize = 16.sp) },
                         singleLine = true,
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 17.sp),
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                         keyboardActions = KeyboardActions(onSend = { send() }),
                         colors = TextFieldDefaults.colors(
@@ -1423,13 +1149,13 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                             focusedIndicatorColor = Color.Transparent,
                             unfocusedIndicatorColor = Color.Transparent,
                             focusedTextColor = inkColor,
-                            unfocusedTextColor = inkColor
+                            unfocusedTextColor = inkColor,
+                            cursorColor = green
                         )
                     )
-                    CircleButton("📷", lightGrey, inkColor) { showPicker = true }
                     Spacer(Modifier.width(6.dp))
                     if (canSend) {
-                        CircleButton("➤", green, Color.White, size = 50.dp) { send() }
+                        CircleButton("➤", green, Color.White, 52.dp) { send() }
                     } else {
                         MicButton(
                             recording = recording || liveHolding,
