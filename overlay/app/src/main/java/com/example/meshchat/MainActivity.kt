@@ -1011,91 +1011,22 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                 } else {
                     LazyColumn(state = chatState, modifier = Modifier.fillMaxSize()) {
                         items(visible) { b ->
-                            val unknownAuthor = !b.mine && (b.author == "photo" || b.author == "vocal")
-                            val avatarBmp = remember(b.mine, b.author, profileTick, myAvatar) {
-                                if (b.mine) myAvatar
-                                else if (unknownAuthor) null
-                                else ProfileStore.avatarBitmapOf(context, b.author)
-                            }
-                            val initial = when {
-                                b.mine -> displayName.take(1).uppercase()
-                                unknownAuthor -> "?"
-                                else -> MeshState.nameOf(b.author).take(1).uppercase()
-                            }
-                            Box(
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
-                                contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
-                            ) {
-                                Row(verticalAlignment = Alignment.Top) {
-                                    if (!b.mine) {
-                                        AvatarDot(avatarBmp, initial, 34.dp, lightGrey, inkColor)
-                                        Spacer(Modifier.width(6.dp))
-                                    }
-                                    Surface(
-                                        color = if (b.mine) mineBg else otherBg,
-                                        shape = RoundedCornerShape(18.dp),
-                                        modifier = Modifier.pointerInput(b) {
-                                            detectTapGestures(onLongPress = { bubbleToDelete = b })
-                                        }
-                                    ) {
-                                        Column(Modifier.padding(12.dp)) {
-                                            b.image?.let { img ->
-                                                Image(
-                                                    bitmap = img.asImageBitmap(),
-                                                    contentDescription = t("photo"),
-                                                    contentScale = ContentScale.Fit,
-                                                    modifier = Modifier.size(240.dp)
-                                                )
-                                            }
-                                            b.audio?.let { path ->
-                                                VoiceBubble(path, green, grey)
-                                                Text(
-                                                    "⬇ ${t("saved_voice")}",
-                                                    color = blue,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.clickable {
-                                                        val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                                        log(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else t("send_fail"))
-                                                    }.padding(vertical = 6.dp)
-                                                )
-                                            }
-                                            b.imagePath?.let { path ->
-                                                Text(
-                                                    "⬇ ${t("saved_photo")}",
-                                                    color = blue,
-                                                    fontSize = 14.sp,
-                                                    fontWeight = FontWeight.Bold,
-                                                    modifier = Modifier.clickable {
-                                                        val name = saveToDownloads(context, path, "image/jpeg", "photo")
-                                                        log(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else t("send_fail"))
-                                                    }.padding(vertical = 6.dp)
-                                                )
-                                            }
-                                            if (b.text.isNotEmpty() && b.audio == null && b.image == null) {
-                                                Text(b.text, color = inkColor, fontSize = 17.sp)
-                                            }
-                                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                                Text(b.time, color = grey, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                                                b.status?.let { s ->
-                                                    val read = s.contains("Lu") || s.contains("Read")
-                                                    Text(
-                                                        "  $s",
-                                                        color = if (read) readGreen else grey,
-                                                        fontSize = if (read) 13.sp else 12.sp,
-                                                        fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
-                                                        fontFamily = FontFamily.Monospace
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if (b.mine) {
-                                        Spacer(Modifier.width(6.dp))
-                                        AvatarDot(avatarBmp, initial, 34.dp, lightGrey, inkColor)
-                                    }
-                                }
-                            }
+                            BubbleRow(
+                                b = b,
+                                myAvatar = myAvatar,
+                                displayName = displayName,
+                                profileTick = profileTick,
+                                green = green,
+                                grey = grey,
+                                ink = inkColor,
+                                blue = blue,
+                                readGreen = readGreen,
+                                mineBg = mineBg,
+                                otherBg = otherBg,
+                                lightGrey = lightGrey,
+                                onLongPress = { bubbleToDelete = it },
+                                onLog = { log(it) }
+                            )
                         }
                     }
                 }
@@ -1164,6 +1095,113 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                         )
                     }
                 }
+            }
+        }
+    }
+}
+
+/** Une bulle de message : avatar, contenu (photo, vocal, texte), heure et statut. */
+@Composable
+private fun BubbleRow(
+    b: ChatBubble,
+    myAvatar: Bitmap?,
+    displayName: String,
+    profileTick: Int,
+    green: Color,
+    grey: Color,
+    ink: Color,
+    blue: Color,
+    readGreen: Color,
+    mineBg: Color,
+    otherBg: Color,
+    lightGrey: Color,
+    onLongPress: (ChatBubble) -> Unit,
+    onLog: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val unknownAuthor = !b.mine && (b.author == "photo" || b.author == "vocal")
+    val avatarBmp = remember(b.mine, b.author, profileTick, myAvatar) {
+        if (b.mine) myAvatar
+        else if (unknownAuthor) null
+        else ProfileStore.avatarBitmapOf(context, b.author)
+    }
+    val initial = when {
+        b.mine -> displayName.take(1).uppercase()
+        unknownAuthor -> "?"
+        else -> MeshState.nameOf(b.author).take(1).uppercase()
+    }
+
+    Box(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
+        contentAlignment = if (b.mine) Alignment.CenterEnd else Alignment.CenterStart
+    ) {
+        Row(verticalAlignment = Alignment.Top) {
+            if (!b.mine) {
+                AvatarDot(avatarBmp, initial, 34.dp, lightGrey, ink)
+                Spacer(Modifier.width(6.dp))
+            }
+            Surface(
+                color = if (b.mine) mineBg else otherBg,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.pointerInput(b) {
+                    detectTapGestures(onLongPress = { onLongPress(b) })
+                }
+            ) {
+                Column(Modifier.padding(12.dp)) {
+                    b.image?.let { img ->
+                        Image(
+                            bitmap = img.asImageBitmap(),
+                            contentDescription = t("photo"),
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.size(240.dp)
+                        )
+                    }
+                    b.audio?.let { path ->
+                        VoiceBubble(path, green, grey)
+                        Text(
+                            "⬇ ${t("saved_voice")}",
+                            color = blue,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable {
+                                val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                onLog(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else t("send_fail"))
+                            }.padding(vertical = 6.dp)
+                        )
+                    }
+                    b.imagePath?.let { path ->
+                        Text(
+                            "⬇ ${t("saved_photo")}",
+                            color = blue,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.clickable {
+                                val name = saveToDownloads(context, path, "image/jpeg", "photo")
+                                onLog(if (name != null) "Photo enregistrée : Téléchargements/Samchat/$name" else t("send_fail"))
+                            }.padding(vertical = 6.dp)
+                        )
+                    }
+                    if (b.text.isNotEmpty() && b.audio == null && b.image == null) {
+                        Text(b.text, color = ink, fontSize = 17.sp)
+                    }
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(b.time, color = grey, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                        b.status?.let { s ->
+                            val read = s.contains("Lu") || s.contains("Read")
+                            Text(
+                                "  $s",
+                                color = if (read) readGreen else grey,
+                                fontSize = if (read) 13.sp else 12.sp,
+                                fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    }
+                }
+            }
+            if (b.mine) {
+                Spacer(Modifier.width(6.dp))
+                AvatarDot(avatarBmp, initial, 34.dp, lightGrey, ink)
             }
         }
     }
