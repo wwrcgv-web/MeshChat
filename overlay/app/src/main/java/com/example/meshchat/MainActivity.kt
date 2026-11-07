@@ -400,6 +400,16 @@ private fun VoiceBubble(path: String, green: Color, grey: Color) {
     }
 }
 
+/** Cercle de chargement affiché à la place du bouton tant que le message est en attente. */
+@Composable
+private fun PendingCircle(color: Color) {
+    CircularProgressIndicator(
+        modifier = Modifier.size(40.dp),
+        color = color,
+        strokeWidth = 3.dp
+    )
+}
+
 @Composable
 private fun AvatarDot(bitmap: Bitmap?, label: String, size: Dp, bg: Color, ink: Color) {
     if (bitmap != null) {
@@ -573,6 +583,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var showDebug by remember { mutableStateOf(false) }
     var showMyQr by remember { mutableStateOf(false) }
     var bubbleToDelete by remember { mutableStateOf<ChatBubble?>(null) }
+    var fullscreenPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var theme by remember { mutableStateOf("système") }
     var recording by remember { mutableStateOf(false) }
     var liveHolding by remember { mutableStateOf(false) }
@@ -688,6 +699,14 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                     ChatBubble(true, "moi", draft, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
                 )
                 draft = ""
+            } else if (target != null) {
+                val cle = manager.sharedKeyWith(target)
+                if (cle != null && RelayDispatch.envoyerParRelais(context, cle, target, draft)) {
+                    MeshState.addBubble(
+                        ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}")
+                    )
+                    draft = ""
+                }
             }
         }
         pendingPhoto?.let { photo ->
@@ -853,6 +872,29 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
             },
             dismissButton = { TextButton(onClick = { bubbleToDelete = null }) { Text(t("cancel"), fontSize = 16.sp) } }
         )
+    }
+
+    // Photo en plein écran : un tap ferme
+    fullscreenPhoto?.let { photo ->
+        Dialog(
+            onDismissRequest = { fullscreenPhoto = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xEE000000))
+                    .clickable { fullscreenPhoto = null },
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    bitmap = photo.asImageBitmap(),
+                    contentDescription = t("photo"),
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+        }
     }
 
     if (showMyQr) {
@@ -1026,6 +1068,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
                                 otherBg = otherBg,
                                 lightGrey = lightGrey,
                                 onLongPress = { bubbleToDelete = it },
+                                onPhotoTap = { fullscreenPhoto = it },
                                 onLog = { log(it) }
                             )
                         }
@@ -1117,6 +1160,7 @@ private fun BubbleRow(
     otherBg: Color,
     lightGrey: Color,
     onLongPress: (ChatBubble) -> Unit,
+    onPhotoTap: (Bitmap) -> Unit,
     onLog: (String) -> Unit
 ) {
     val context = LocalContext.current
@@ -1131,6 +1175,10 @@ private fun BubbleRow(
         unknownAuthor -> "?"
         else -> MeshState.nameOf(b.author).take(1).uppercase()
     }
+    // Tant que le message est en attente, on affiche un cercle qui tourne
+    val pending = b.status?.contains("En attente") == true || b.status?.contains("Waiting") == true
+    val read = b.status?.let { it.contains("Lu") || it.contains("Read") } == true
+    val received = b.status?.let { it.contains("Reçu") || it.contains("Received") } == true
 
     Box(
         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
@@ -1154,21 +1202,31 @@ private fun BubbleRow(
                             bitmap = img.asImageBitmap(),
                             contentDescription = t("photo"),
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier.size(240.dp)
+                            modifier = Modifier
+                                .size(240.dp)
+                                .clickable { onPhotoTap(img) }
                         )
                     }
+                    if (pending && (b.audio != null || b.image != null)) {
+                        PendingCircle(green)
+                    }
                     b.audio?.let { path ->
-                        VoiceBubble(path, green, grey)
-                        Text(
-                            "⬇ ${t("saved_voice")}",
-                            color = blue,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.clickable {
-                                val name = saveToDownloads(context, path, "audio/mp4", "vocal")
-                                onLog(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else t("send_fail"))
-                            }.padding(vertical = 6.dp)
-                        )
+                        if (pending) {
+                            // Vocal en attente : pas encore de bouton de lecture
+                            Text("⏳ ${t("voice")}", color = grey, fontSize = 14.sp)
+                        } else {
+                            VoiceBubble(path, green, grey)
+                            Text(
+                                "⬇ ${t("saved_voice")}",
+                                color = blue,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.clickable {
+                                    val name = saveToDownloads(context, path, "audio/mp4", "vocal")
+                                    onLog(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else t("send_fail"))
+                                }.padding(vertical = 6.dp)
+                            )
+                        }
                     }
                     b.imagePath?.let { path ->
                         Text(
@@ -1188,12 +1246,11 @@ private fun BubbleRow(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(b.time, color = grey, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                         b.status?.let { s ->
-                            val read = s.contains("Lu") || s.contains("Read")
                             Text(
                                 "  $s",
-                                color = if (read) readGreen else grey,
-                                fontSize = if (read) 13.sp else 12.sp,
-                                fontWeight = if (read) FontWeight.Bold else FontWeight.Normal,
+                                color = if (read || received) readGreen else grey,
+                                fontSize = if (read || received) 13.sp else 12.sp,
+                                fontWeight = if (read || received) FontWeight.Bold else FontWeight.Normal,
                                 fontFamily = FontFamily.Monospace
                             )
                         }
