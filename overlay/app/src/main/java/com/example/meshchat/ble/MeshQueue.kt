@@ -4,7 +4,7 @@ import java.util.UUID
 
 /**
  * File d'attente des messages qui n'ont trouvé aucun pair.
- * Chaque message reste au maximum [MAX_AGE_MS] millisecondes, pour ne pas remplir la mémoire.
+ * Chaque message reste au maximum [MAX_AGE_MS] millisecondes (24 heures), pour ne pas remplir la mémoire.
  */
 class MeshQueue {
     private class Pending(val packet: MeshPacket, val createdAt: Long)
@@ -39,7 +39,8 @@ class MeshQueue {
     }
 
     companion object {
-        const val MAX_AGE_MS = 10 * 60 * 1000L
+        /** Durée de conservation : 24 heures. */
+        const val MAX_AGE_MS = 24 * 60 * 60 * 1000L
         const val MAX_ITEMS = 50
     }
 }
