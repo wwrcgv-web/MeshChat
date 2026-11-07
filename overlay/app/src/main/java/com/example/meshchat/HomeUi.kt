@@ -120,7 +120,7 @@ private fun NavItem(icon: String, label: String, selected: Boolean, onClick: () 
         modifier = Modifier
             .clip(RoundedCornerShape(16.dp))
             .clickable(onClick = onClick)
-            .padding(horizontal = 22.dp, vertical = 8.dp)
+            .padding(horizontal = 26.dp, vertical = 8.dp)
     ) {
         Box(
             Modifier
@@ -131,13 +131,12 @@ private fun NavItem(icon: String, label: String, selected: Boolean, onClick: () 
         Text(
             label,
             color = if (selected) SamchatColors.White else SamchatColors.Grey,
-            fontSize = 14.sp,
+            fontSize = 15.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
         )
     }
 }
 
-/** Carte repliable des Réglages : grande icône, titre, courte explication. */
 @Composable
 private fun SettingsCard(
     icon: String,
@@ -239,10 +238,7 @@ private fun fieldColors() = TextFieldDefaults.colors(
     cursorColor = SamchatColors.Green
 )
 
-/**
- * Écran Réglages : 8 rubriques repliables. Il ne contient aucune logique de messagerie :
- * il appelle les mêmes fonctions et écrit les mêmes préférences qu'avant.
- */
+/** Écran Réglages : 8 rubriques repliables, ouvert par le ⋮ en haut à droite de l'accueil. */
 @Composable
 fun SettingsScreen(
     context: Context,
@@ -426,10 +422,7 @@ fun SettingsScreen(
     }
 }
 
-/**
- * Écran d'accueil : recherche, filtres, liste des discussions, barre du bas.
- * Ne contient aucune logique de messagerie : il lit les listes et appelle les fonctions reçues.
- */
+/** Écran d'accueil : logo, ⋮ (Réglages) en haut à droite, recherche, filtres, liste, barre du bas à deux entrées. */
 @Composable
 fun ChatListScreen(
     context: Context,
@@ -463,119 +456,108 @@ fun ChatListScreen(
     val showAll = (q.isEmpty() || "tous".contains(q)) && filter == 0
 
     Surface(modifier = Modifier.fillMaxSize(), color = SamchatColors.Background) {
-        Box(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize()) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 6.dp)
-                ) {
-                    Image(
-                        painter = painterResource(id = R.mipmap.ic_launcher),
-                        contentDescription = "Logo Samchat",
-                        modifier = Modifier.size(34.dp)
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text("Samchat", color = SamchatColors.Green, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Text(
-                        if (serviceOn) "● actif" else "○ arrêté",
-                        color = if (serviceOn) SamchatColors.Green else SamchatColors.Grey,
-                        fontSize = 13.sp
-                    )
-                }
-
-                if (tab == 0) {
-                    TextField(
-                        value = query,
-                        onValueChange = { query = it },
-                        singleLine = true,
-                        shape = RoundedCornerShape(28.dp),
-                        placeholder = { Text("Rechercher", color = SamchatColors.Grey) },
-                        colors = fieldColors(),
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                    )
-                    Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("Toutes", "À portée").forEachIndexed { i, label ->
-                            val on = filter == i
-                            Box(
-                                Modifier
-                                    .heightIn(min = 44.dp)
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .background(if (on) SamchatColors.GreenSoft else SamchatColors.Field)
-                                    .clickable { filter = i }
-                                    .padding(horizontal = 18.dp, vertical = 10.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(label, color = SamchatColors.White, fontSize = 15.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
-                            }
-                        }
-                    }
-
-                    LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                        if (showAll) {
-                            item {
-                                val last = bubbles.lastOrNull { it.chat == ALL_CHAT }
-                                ChatRow("Tous", previewOf(last), last?.time?.takeLast(5) ?: "",
-                                    online = peers.isNotEmpty(), avatar = null, letter = "👥") { onOpen(ALL_CHAT) }
-                            }
-                        }
-                        items(shown, key = { it.id }) { c ->
-                            val last = bubbles.lastOrNull { it.chat == c.id }
-                            val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
-                            val name = MeshState.nameOf(c.id)
-                            ChatRow("@$name", previewOf(last), last?.time?.takeLast(5) ?: "",
-                                online = peers.any { it.id == c.id }, avatar = avatar,
-                                letter = name.take(1).uppercase()) { onOpen(c.id) }
-                        }
-                        if (contacts.isEmpty()) {
-                            item {
-                                Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Text("Aucun contact pour l'instant", color = SamchatColors.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(6.dp))
-                                    Text("Appuie sur le bouton vert + pour ajouter un ami.", color = SamchatColors.Grey, fontSize = 15.sp)
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
-                        BigButton("Mon QR code", onClick = onShowQr)
-                        Spacer(Modifier.height(10.dp))
-                        BigButton("Scanner un QR code", onClick = onScan)
-                        Spacer(Modifier.height(14.dp))
-                        Text("MES CONTACTS (${contacts.size})", color = SamchatColors.Grey, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                        LazyColumn(Modifier.fillMaxSize()) {
-                            items(contacts, key = { it.id }) { c ->
-                                val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
-                                val online = peers.any { it.id == c.id }
-                                val name = MeshState.nameOf(c.id)
-                                ChatRow("@$name", if (online) "À portée" else "Hors de portée", "",
-                                    online = online, avatar = avatar, letter = name.take(1).uppercase()) { onOpen(c.id) }
-                            }
-                        }
-                    }
-                }
-
-                Row(
-                    Modifier.fillMaxWidth().background(SamchatColors.Card).padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceEvenly
-                ) {
-                    NavItem("💬", "Discussions", tab == 0) { tab = 0 }
-                    NavItem("👥", "Contacts", tab == 1) { tab = 1 }
-                    NavItem("⚙", "Réglages", false) { onSettings() }
+        Column(Modifier.fillMaxSize()) {
+            // Barre du haut : logo, nom, état, et ⋮ (Réglages) à droite
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp, top = 14.dp, bottom = 6.dp)
+            ) {
+                Image(
+                    painter = painterResource(id = R.mipmap.ic_launcher),
+                    contentDescription = "Logo Samchat",
+                    modifier = Modifier.size(34.dp)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text("Samchat", color = SamchatColors.Green, fontSize = 26.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                Text(
+                    if (serviceOn) "● actif" else "○ arrêté",
+                    color = if (serviceOn) SamchatColors.Green else SamchatColors.Grey,
+                    fontSize = 13.sp
+                )
+                TextButton(onClick = onSettings, modifier = Modifier.size(52.dp)) {
+                    Text("⋮", color = SamchatColors.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
             if (tab == 0) {
-                Box(
-                    Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 18.dp, bottom = 100.dp)
-                        .size(64.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .background(SamchatColors.Green)
-                        .clickable(onClick = onScan),
-                    contentAlignment = Alignment.Center
-                ) { Text("+", color = Color.White, fontSize = 34.sp, fontWeight = FontWeight.Bold) }
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    singleLine = true,
+                    shape = RoundedCornerShape(28.dp),
+                    placeholder = { Text("Rechercher", color = SamchatColors.Grey) },
+                    colors = fieldColors(),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
+                )
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("Toutes", "À portée").forEachIndexed { i, label ->
+                        val on = filter == i
+                        Box(
+                            Modifier
+                                .heightIn(min = 44.dp)
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(if (on) SamchatColors.GreenSoft else SamchatColors.Field)
+                                .clickable { filter = i }
+                                .padding(horizontal = 18.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(label, color = SamchatColors.White, fontSize = 15.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
+                        }
+                    }
+                }
+
+                LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
+                    if (showAll) {
+                        item {
+                            val last = bubbles.lastOrNull { it.chat == ALL_CHAT }
+                            ChatRow("Tous", previewOf(last), last?.time?.takeLast(5) ?: "",
+                                online = peers.isNotEmpty(), avatar = null, letter = "👥") { onOpen(ALL_CHAT) }
+                        }
+                    }
+                    items(shown, key = { it.id }) { c ->
+                        val last = bubbles.lastOrNull { it.chat == c.id }
+                        val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
+                        val name = MeshState.nameOf(c.id)
+                        ChatRow("@$name", previewOf(last), last?.time?.takeLast(5) ?: "",
+                            online = peers.any { it.id == c.id }, avatar = avatar,
+                            letter = name.take(1).uppercase()) { onOpen(c.id) }
+                    }
+                    if (contacts.isEmpty()) {
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Aucun contact pour l'instant", color = SamchatColors.White, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                Spacer(Modifier.height(6.dp))
+                                Text("Va dans Contacts pour scanner un ami.", color = SamchatColors.Grey, fontSize = 15.sp)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
+                    BigButton("Mon QR code", onClick = onShowQr)
+                    Spacer(Modifier.height(10.dp))
+                    BigButton("Scanner un QR code", onClick = onScan)
+                    Spacer(Modifier.height(14.dp))
+                    Text("MES CONTACTS (${contacts.size})", color = SamchatColors.Grey, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        items(contacts, key = { it.id }) { c ->
+                            val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
+                            val online = peers.any { it.id == c.id }
+                            val name = MeshState.nameOf(c.id)
+                            ChatRow("@$name", if (online) "À portée" else "Hors de portée", "",
+                                online = online, avatar = avatar, letter = name.take(1).uppercase()) { onOpen(c.id) }
+                        }
+                    }
+                }
+            }
+
+            // Barre du bas : deux entrées seulement
+            Row(
+                Modifier.fillMaxWidth().background(SamchatColors.Card).padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                NavItem("💬", "Discussions", tab == 0) { tab = 0 }
+                NavItem("👥", "Contacts", tab == 1) { tab = 1 }
             }
         }
     }
