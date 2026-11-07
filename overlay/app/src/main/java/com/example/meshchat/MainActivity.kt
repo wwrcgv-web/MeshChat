@@ -912,9 +912,9 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Réglages : écran plein écran, ouvert par le ⋮ en haut à droite de l'accueil
+        // Réglages : écran plein écran, ouvert par le ⋮ en haut à droite de l'accueil
     if (showSettings) {
-        SettingsScreen(
+        SettingsHub(
             context = context,
             myName = myName,
             myAvatar = myAvatar,
