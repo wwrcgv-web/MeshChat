@@ -364,6 +364,13 @@ object MeshState {
         return known ?: pseudoFrom(id.take(8))
     }
 
+    /** Message reçu par le relais Internet : affiché comme un message reçu, avec le statut « 🌐 Reçu ». */
+    fun addRelayReceived(expediteurId: String, texte: String) {
+        addBubble(ChatBubble(false, expediteurId, texte, null, expediteurId, status = "🌐 Reçu"))
+        count("in_text")
+        notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", texte)
+    }
+
     fun addJournal(line: String) {
         journal.add(line)
         if (journal.size > MAX_JOURNAL) journal.removeAt(0)
@@ -456,18 +463,15 @@ object MeshState {
                 refresh()
             }
             line.startsWith("Clés mémorisées : ") -> {
-                // Au démarrage, la liste des contacts déjà rencontrés est chargée ici
                 addJournal(line)
                 refresh()
             }
             line.startsWith("Statut ") -> {
-                // « Statut <identifiant> reçu » ou « Statut <identifiant> lu »
                 val rest = line.removePrefix("Statut ")
                 val id = rest.substringBefore(" ")
                 setStatus(id, if (rest.endsWith("lu")) "✓✓ Lu" else "✓✓ Reçu")
             }
             line.startsWith("Parti ") -> {
-                // Au moins un téléphone a reçu tous les morceaux
                 setStatus(line.removePrefix("Parti ").trim(), "✓ Parti")
                 addJournal(line)
             }
@@ -481,7 +485,6 @@ object MeshState {
                 addJournal(line)
             }
             line.startsWith("Profil reçu de ") -> {
-                // Un profil de contact a été accepté : l'écran doit se rafraîchir
                 profileTick++
                 addJournal(line)
             }
