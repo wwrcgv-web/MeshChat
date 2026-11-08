@@ -93,7 +93,6 @@ private val TEXTS: Map<String, List<String>> = mapOf(
         "Samchat 无需互联网即可使用。请保持蓝牙开启，并与联系人保持几米的距离。添加联系人请扫描其二维码。长按消息可将其删除。"
     ),
     "help_head" to listOf("AIDE", "HELP", "AYUDA", "AJUDA", "المساعدة", "帮助"),
-    "about" to listOf("À PROPOS", "ABOUT", "ACERCA DE", "SOBRE", "حول", "关于"),
     "update" to listOf("MISE À JOUR", "UPDATE", "ACTUALIZACIÓN", "ATUALIZAÇÃO", "التحديث", "更新"),
     "update_btn" to listOf("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones", "Verificar atualizações", "التحقق من التحديثات", "检查更新"),
     "update_note" to listOf("Ouvre la page de téléchargement de la dernière version.", "Opens the download page for the latest version.", "Abre la página de descarga de la última versión.", "Abre a página de transferência da versão mais recente.", "يفتح صفحة تنزيل أحدث إصدار.", "打开最新版本的下载页面。"),
@@ -503,20 +502,16 @@ fun SettingsHub(
                     }
 
                     7 -> {
-                        // Confidentialité
                         NoteConfidentialite()
 
-                        // Mise à jour
                         HubLabel(tr(lang, "update"))
                         Text("Samchat, version $version", color = SamchatColors.White, fontSize = 15.sp)
                         Text(tr(lang, "update_note"), color = SamchatColors.Grey, fontSize = 13.sp)
                         Spacer(Modifier.height(8.dp))
                         HubButton(tr(lang, "update_btn")) {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES_URL))
-                            context.startActivity(intent)
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES_URL)))
                         }
 
-                        // Langue
                         HubLabel(tr(lang, "lang"))
                         LANGUAGES.chunked(2).forEach { pair ->
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -544,9 +539,52 @@ fun SettingsHub(
                         }
                         Text(tr(lang, "lang_note"), color = SamchatColors.Grey, fontSize = 13.sp)
 
-                        // Aide
                         HubLabel(tr(lang, "help_head"))
                         Text(tr(lang, "help_body"), color = SamchatColors.White, fontSize = 15.sp)
                     }
 
                     8 -> {
+                        Text("${tr(lang, "inst")} : $installer", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Text("${tr(lang, "peers")} : ${peers.size}", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.height(12.dp))
+                        HubButton(tr(lang, "debug_btn"), selected = false, onClick = onDebug)
+                    }
+
+                    9 -> {
+                        HubSwitch(tr(lang, "internet"), tr(lang, "internet_note"), internetOn) { on ->
+                            internetOn = on
+                            RelayClient.setEnabled(context, on)
+                        }
+                        HubLabel(tr(lang, "token"))
+                        Text(tr(lang, "token_note"), color = SamchatColors.Grey, fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        TextField(
+                            value = tokenInput,
+                            onValueChange = { tokenInput = it },
+                            singleLine = true,
+                            visualTransformation = PasswordVisualTransformation(),
+                            shape = RoundedCornerShape(14.dp),
+                            colors = hubFieldColors(),
+                            textStyle = TextStyle(fontSize = 16.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "token_save"), enabled = tokenInput.length >= 16) {
+                            RelayClient.saveToken(context, tokenInput)
+                            tokenInput = ""
+                            tokenSaved = true
+                        }
+                        if (tokenSaved) {
+                            Text(tr(lang, "token_saved"), color = SamchatColors.Green, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
+                            Spacer(Modifier.height(8.dp))
+                            HubButton(tr(lang, "token_clear"), selected = false) {
+                                RelayClient.saveToken(context, "")
+                                tokenSaved = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
