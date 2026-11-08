@@ -2,8 +2,10 @@ package com.example.meshchat
 
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -37,6 +39,9 @@ import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.service.MeshService
 
+/** Adresse où sont publiées les versions de Samchat (GitHub Releases). */
+private const val RELEASES_URL = "https://github.com/wwrcgv-web/MeshChat/releases"
+
 private val LANGUAGES = listOf(
     "fr" to "Français", "en" to "English", "es" to "Español", "pt" to "Português",
     "ar" to "العربية", "zh" to "中文",
@@ -60,8 +65,8 @@ private val TEXTS: Map<String, List<String>> = mapOf(
     "contacts_hint" to listOf("Mon QR code, scanner, liste des contacts.", "My QR code, scan, contact list.", "Mi código QR, escanear, lista de contactos.", "Meu QR code, ler, lista de contactos.", "رمز QR الخاص بي، المسح، قائمة الجهات.", "我的二维码、扫描、联系人列表。"),
     "share" to listOf("Partage", "Share", "Compartir", "Partilhar", "مشاركة", "分享"),
     "share_hint" to listOf("Envoyer l'application à un proche.", "Send the app to someone.", "Enviar la app a alguien.", "Enviar a app a alguém.", "أرسل التطبيق إلى شخص قريب.", "把应用发送给亲友。"),
-    "help" to listOf("Langue et assistance", "Language and help", "Idioma y ayuda", "Idioma e ajuda", "اللغة والمساعدة", "语言与帮助"),
-    "help_hint" to listOf("Langue, aide et informations.", "Language, help and information.", "Idioma, ayuda e información.", "Idioma, ajuda e informação.", "اللغة والمساعدة والمعلومات.", "语言、帮助和信息。"),
+    "privacy" to listOf("Confidentialité et aide", "Privacy and help", "Privacidad y ayuda", "Privacidade e ajuda", "الخصوصية والمساعدة", "隐私与帮助"),
+    "privacy_hint" to listOf("Confidentialité, mises à jour, langue et aide.", "Privacy, updates, language and help.", "Privacidad, actualizaciones, idioma y ayuda.", "Privacidade, atualizações, idioma e ajuda.", "الخصوصية والتحديثات واللغة والمساعدة.", "隐私、更新、语言与帮助。"),
     "diag" to listOf("Diagnostic avancé", "Advanced diagnostics", "Diagnóstico avanzado", "Diagnóstico avançado", "تشخيص متقدم", "高级诊断"),
     "diag_hint" to listOf("Outils de debug et informations techniques.", "Debug tools and technical info.", "Herramientas de depuración e información técnica.", "Ferramentas de depuração e informação técnica.", "أدوات التصحيح والمعلومات التقنية.", "调试工具和技术信息。"),
     "name" to listOf("NOM D'UTILISATEUR", "USERNAME", "NOMBRE DE USUARIO", "NOME DE UTILIZADOR", "اسم المستخدم", "用户名"),
@@ -87,7 +92,11 @@ private val TEXTS: Map<String, List<String>> = mapOf(
         "يعمل Samchat بدون إنترنت. أبقِ البلوتوث مفعّلاً وابقَ على بعد بضعة أمتار من جهات اتصالك. لإضافة جهة اتصال، امسح رمز QR الخاص بها. اضغط مطوّلاً على رسالة لحذفها.",
         "Samchat 无需互联网即可使用。请保持蓝牙开启，并与联系人保持几米的距离。添加联系人请扫描其二维码。长按消息可将其删除。"
     ),
+    "help_head" to listOf("AIDE", "HELP", "AYUDA", "AJUDA", "المساعدة", "帮助"),
     "about" to listOf("À PROPOS", "ABOUT", "ACERCA DE", "SOBRE", "حول", "关于"),
+    "update" to listOf("MISE À JOUR", "UPDATE", "ACTUALIZACIÓN", "ATUALIZAÇÃO", "التحديث", "更新"),
+    "update_btn" to listOf("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones", "Verificar atualizações", "التحقق من التحديثات", "检查更新"),
+    "update_note" to listOf("Ouvre la page de téléchargement de la dernière version.", "Opens the download page for the latest version.", "Abre la página de descarga de la última versión.", "Abre a página de transferência da versão mais recente.", "يفتح صفحة تنزيل أحدث إصدار.", "打开最新版本的下载页面。"),
     "scan" to listOf("Scanner un QR code", "Scan a QR code", "Escanear un código QR", "Ler um QR code", "مسح رمز QR", "扫描二维码"),
     "myqr" to listOf("Mon QR code", "My QR code", "Mi código QR", "Meu QR code", "رمز QR الخاص بي", "我的二维码"),
     "share_btn" to listOf("Partager Samchat", "Share Samchat", "Compartir Samchat", "Partilhar Samchat", "مشاركة Samchat", "分享 Samchat"),
@@ -353,7 +362,7 @@ fun SettingsHub(
         4 -> tr(lang, "relay")
         5 -> tr(lang, "contacts")
         6 -> tr(lang, "share")
-        7 -> tr(lang, "help")
+        7 -> tr(lang, "privacy")
         8 -> tr(lang, "diag")
         9 -> tr(lang, "internet")
         else -> tr(lang, "settings")
@@ -389,7 +398,7 @@ fun SettingsHub(
                         NavRow(3, tr(lang, "relay"), tr(lang, "relay_hint")) { page = 4 }
                         NavRow(4, tr(lang, "contacts"), tr(lang, "contacts_hint")) { page = 5 }
                         NavRow(5, tr(lang, "share"), tr(lang, "share_hint")) { page = 6 }
-                        NavRow(6, tr(lang, "help"), tr(lang, "help_hint")) { page = 7 }
+                        NavRow(6, tr(lang, "privacy"), tr(lang, "privacy_hint")) { page = 7 }
                         NavRow(7, tr(lang, "diag"), tr(lang, "diag_hint")) { page = 8 }
                     }
 
@@ -494,6 +503,20 @@ fun SettingsHub(
                     }
 
                     7 -> {
+                        // Confidentialité
+                        NoteConfidentialite()
+
+                        // Mise à jour
+                        HubLabel(tr(lang, "update"))
+                        Text("Samchat, version $version", color = SamchatColors.White, fontSize = 15.sp)
+                        Text(tr(lang, "update_note"), color = SamchatColors.Grey, fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "update_btn")) {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES_URL))
+                            context.startActivity(intent)
+                        }
+
+                        // Langue
                         HubLabel(tr(lang, "lang"))
                         LANGUAGES.chunked(2).forEach { pair ->
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -520,54 +543,10 @@ fun SettingsHub(
                             Spacer(Modifier.height(8.dp))
                         }
                         Text(tr(lang, "lang_note"), color = SamchatColors.Grey, fontSize = 13.sp)
-                        HubLabel(tr(lang, "help").substringBefore(" ").uppercase())
+
+                        // Aide
+                        HubLabel(tr(lang, "help_head"))
                         Text(tr(lang, "help_body"), color = SamchatColors.White, fontSize = 15.sp)
-                        HubLabel(tr(lang, "about"))
-                        Text("Samchat, version $version", color = SamchatColors.White, fontSize = 15.sp)
                     }
 
                     8 -> {
-                        Text("${tr(lang, "inst")} : $installer", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                        Text("${tr(lang, "peers")} : ${peers.size}", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                        Spacer(Modifier.height(12.dp))
-                        HubButton(tr(lang, "debug_btn"), selected = false, onClick = onDebug)
-                    }
-
-                    9 -> {
-                        HubSwitch(tr(lang, "internet"), tr(lang, "internet_note"), internetOn) { on ->
-                            internetOn = on
-                            RelayClient.setEnabled(context, on)
-                        }
-                        HubLabel(tr(lang, "token"))
-                        Text(tr(lang, "token_note"), color = SamchatColors.Grey, fontSize = 13.sp)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = tokenInput,
-                            onValueChange = { tokenInput = it },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = hubFieldColors(),
-                            textStyle = TextStyle(fontSize = 16.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        HubButton(tr(lang, "token_save"), enabled = tokenInput.length >= 16) {
-                            RelayClient.saveToken(context, tokenInput)
-                            tokenInput = ""
-                            tokenSaved = true
-                        }
-                        if (tokenSaved) {
-                            Text(tr(lang, "token_saved"), color = SamchatColors.Green, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
-                            Spacer(Modifier.height(8.dp))
-                            HubButton(tr(lang, "token_clear"), selected = false) {
-                                RelayClient.saveToken(context, "")
-                                tokenSaved = false
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
