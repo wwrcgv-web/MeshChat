@@ -1,7 +1,7 @@
 package com.example.meshchat
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
+
 import android.Manifest
+import android.bluetooth.BluetoothAdapter
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -57,6 +57,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -221,6 +223,8 @@ class MainActivity : ComponentActivity() {
         startMeshService()
     }
 
+    private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppState.liveOn = getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean("live_on", false)
@@ -229,7 +233,8 @@ class MainActivity : ComponentActivity() {
             MeshHome(
                 onStart = { askPermissions() },
                 onStop = { stopMeshService() },
-                onRestart = { restartMeshService() }
+                onRestart = { restartMeshService() },
+                onEnableBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
             )
         }
         if (BleMeshManager.instance == null) askPermissions()
@@ -244,7 +249,15 @@ class MainActivity : ComponentActivity() {
             manager.openChatPeer = AppState.openChat
             AppState.openChat?.let { manager.markRead(it) }
         }
+        // Au retour dans Samchat : relève les messages du relais, si Internet est activé
+        Thread {
+            RelayReceive.releverEtDechiffrer(this).forEach { recu ->
+                main.post { MeshState.addRelayReceived(recu.expediteurId, recu.texte) }
+            }
+        }.start()
     }
+
+    private val main = Handler(Looper.getMainLooper())
 
     override fun onStop() {
         super.onStop()
@@ -574,7 +587,12 @@ private fun CircleButton(label: String, background: Color, textColor: Color, siz
 }
 
 @Composable
-private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> Unit) {
+private fun MeshHome(
+    onStart: () -> Unit,
+    onStop: () -> Unit,
+    onRestart: () -> Unit,
+    onEnableBluetooth: () -> Unit
+) {
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var selectedChat by remember { mutableStateOf(PUBLIC) }
@@ -583,6 +601,7 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     var showSettings by remember { mutableStateOf(false) }
     var showDebug by remember { mutableStateOf(false) }
     var showMyQr by remember { mutableStateOf(false) }
+    var showBluetoothAsk by remember { mutableStateOf(false) }
     var bubbleToDelete by remember { mutableStateOf<ChatBubble?>(null) }
     var fullscreenPhoto by remember { mutableStateOf<Bitmap?>(null) }
     var theme by remember { mutableStateOf("système") }
@@ -611,6 +630,12 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
     val profileTick = MeshState.profileTick
 
     fun log(line: String) = MeshState.addJournal(line)
+
+    // Au lancement : demander d'activer le Bluetooth s'il est éteint
+    LaunchedEffect(Unit) {
+        val bt = BluetoothAdapter.getDefaultAdapter()
+        if (bt != null && !bt.isEnabled) showBluetoothAsk = true
+    }
 
     fun saveName(raw: String) {
         val clean = raw.trim().take(20)
@@ -859,6 +884,20 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
+    if (showBluetoothAsk && myName.isNotBlank()) {
+        AlertDialog(
+            onDismissRequest = { showBluetoothAsk = false },
+            title = { Text("Activer le Bluetooth") },
+            text = { Text("Le Bluetooth est nécessaire pour envoyer et recevoir les messages hors ligne, sans Internet.") },
+            confirmButton = {
+                TextButton(onClick = { showBluetoothAsk = false; onEnableBluetooth() }) { Text("Activer", fontSize = 16.sp) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBluetoothAsk = false }) { Text("Plus tard", fontSize = 16.sp) }
+            }
+        )
+    }
+
     bubbleToDelete?.let { target ->
         AlertDialog(
             onDismissRequest = { bubbleToDelete = null },
@@ -875,7 +914,6 @@ private fun MeshHome(onStart: () -> Unit, onStop: () -> Unit, onRestart: () -> U
         )
     }
 
-    // Photo en plein écran : un tap ferme
     fullscreenPhoto?.let { photo ->
         Dialog(
             onDismissRequest = { fullscreenPhoto = null },
@@ -1176,7 +1214,6 @@ private fun BubbleRow(
         unknownAuthor -> "?"
         else -> MeshState.nameOf(b.author).take(1).uppercase()
     }
-    // Tant que le message est en attente, on affiche un cercle qui tourne
     val pending = b.status?.contains("En attente") == true || b.status?.contains("Waiting") == true
     val read = b.status?.let { it.contains("Lu") || it.contains("Read") } == true
     val received = b.status?.let { it.contains("Reçu") || it.contains("Received") } == true
@@ -1213,7 +1250,6 @@ private fun BubbleRow(
                     }
                     b.audio?.let { path ->
                         if (pending) {
-                            // Vocal en attente : pas encore de bouton de lecture
                             Text("⏳ ${t("voice")}", color = grey, fontSize = 14.sp)
                         } else {
                             VoiceBubble(path, green, grey)
