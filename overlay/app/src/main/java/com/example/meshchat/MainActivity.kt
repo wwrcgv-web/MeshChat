@@ -1,4 +1,4 @@
-   package com.example.meshchat
+package com.example.meshchat
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
