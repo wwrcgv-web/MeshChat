@@ -251,10 +251,13 @@ class MainActivity : ComponentActivity() {
             manager.openChatPeer = AppState.openChat
             AppState.openChat?.let { manager.markRead(it) }
         }
-        // Au retour dans Samchat : relève les messages du relais, si Internet est activé
+        // Au retour dans Samchat : relève les messages et les accusés du relais, si Internet est activé
         Thread {
             RelayReceive.releverEtDechiffrer(this).forEach { recu ->
                 main.post { MeshState.addRelayReceived(recu.expediteurId, recu.texte) }
+            }
+            RelayAck.releverAccuses(this).forEach { msgId ->
+                main.post { MeshState.confirmerRelais(msgId) }
             }
         }.start()
     }
@@ -726,9 +729,11 @@ private fun MeshHome(
                 draft = ""
             } else if (target != null) {
                 val cle = manager.sharedKeyWith(target)
-                if (cle != null && RelayDispatch.envoyerParRelais(context, cle, target, draft) != null) {
+                val relayId = if (cle != null) RelayDispatch.envoyerParRelais(context, cle, target, draft) else null
+                if (relayId != null) {
+                    // La bulle garde l'identifiant du relais : l'accusé pourra la passer à « Reçu »
                     MeshState.addBubble(
-                        ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}")
+                        ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
                     )
                     draft = ""
                 }
