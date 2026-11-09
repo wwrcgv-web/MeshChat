@@ -727,7 +727,7 @@ private fun MeshHome(
                 draft = ""
             } else if (target != null) {
                 val cle = manager.sharedKeyWith(target)
-                if (cle != null && RelayDispatch.envoyerParRelais(context, cle, target, draft)) {
+                envoyerParRelais(context, cle, target, draft) != null) {
                     MeshState.addBubble(
                         ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}")
                     )
