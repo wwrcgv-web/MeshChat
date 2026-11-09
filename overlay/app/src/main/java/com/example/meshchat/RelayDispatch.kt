@@ -4,12 +4,13 @@ import android.content.Context
 import android.util.Base64
 import com.example.meshchat.crypto.CryptoEngine
 import java.security.MessageDigest
+import java.security.SecureRandom
 import javax.crypto.SecretKey
 
 /**
  * Envoi d'un message texte par le relais Internet, quand le destinataire n'est pas à portée.
- * Le message est chiffré ici avec le secret partagé : le relais ne voit que du chiffré.
- * Ne fait rien si Internet est désactivé ou si le jeton n'est pas enregistré.
+ * Le contenu chiffré porte un identifiant de message : « ID:<msgId>|<texte> ».
+ * Le relais ne voit que du chiffré. Ne fait rien si Internet est désactivé.
  */
 object RelayDispatch {
 
@@ -20,14 +21,21 @@ object RelayDispatch {
         return digest.joinToString("") { "%02x".format(it) }
     }
 
+    /** Nouvel identifiant de message (16 caractères hexadécimaux). */
+    fun nouvelId(): String {
+        val octets = ByteArray(8).also { SecureRandom().nextBytes(it) }
+        return octets.joinToString("") { "%02x".format(it) }
+    }
+
     /**
-     * Chiffre le texte avec la clé partagée puis le dépose sur le relais.
-     * Retourne true si le relais a accepté le message.
+     * Chiffre « ID:<msgId>|<texte> » avec la clé partagée puis le dépose sur le relais.
+     * Retourne l'identifiant du message si le relais l'a accepté, sinon null.
      */
-    fun envoyerParRelais(context: Context, cleSecrete: SecretKey, destinataireId: String, texte: String): Boolean {
-        if (!RelayClient.isEnabled(context)) return false
-        val chiffre = CryptoEngine.encrypt(texte.toByteArray(Charsets.UTF_8), cleSecrete)
+    fun envoyerParRelais(context: Context, cleSecrete: SecretKey, destinataireId: String, texte: String): String? {
+        if (!RelayClient.isEnabled(context)) return null
+        val msgId = nouvelId()
+        val chiffre = CryptoEngine.encrypt("ID:$msgId|$texte".toByteArray(Charsets.UTF_8), cleSecrete)
         val contenu = Base64.encodeToString(chiffre, Base64.NO_WRAP)
-        return RelayClient.deposer(context, hacherDestinataire(destinataireId), contenu)
+        return if (RelayClient.deposer(context, hacherDestinataire(destinataireId), contenu)) msgId else null
     }
 }
