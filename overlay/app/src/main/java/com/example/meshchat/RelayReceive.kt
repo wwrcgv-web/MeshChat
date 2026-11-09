@@ -7,18 +7,14 @@ import com.example.meshchat.crypto.CryptoEngine
 
 /**
  * Réception des messages déposés sur le relais Internet.
- * Relève les messages chiffrés pour ce téléphone, les déchiffre avec la clé du contact,
- * et renvoie les textes lisibles. Ne fait rien si Internet est désactivé.
+ * Relève les messages chiffrés, les déchiffre avec la clé du contact, puis dépose
+ * un accusé « REÇU » à l'expéditeur. Ne fait rien si Internet est désactivé.
  */
 object RelayReceive {
 
-    /** Un message relevé : expéditeur identifié par la clé qui le déchiffre, et texte. */
-    data class Recu(val expediteurId: String, val texte: String)
+    /** Un message relevé : expéditeur, identifiant du message d'origine et texte. */
+    data class Recu(val expediteurId: String, val msgId: String, val texte: String)
 
-    /**
-     * Relève les messages pour mon identifiant haché, puis tente de les déchiffrer
-     * avec chacun de mes contacts. Retourne les messages déchiffrés.
-     */
     fun releverEtDechiffrer(context: Context): List<Recu> {
         if (!RelayClient.isEnabled(context)) return emptyList()
         val manager = BleMeshManager.instance ?: return emptyList()
@@ -31,11 +27,17 @@ object RelayReceive {
             } catch (e: Exception) {
                 continue
             }
-            // Le message vient de l'un de mes contacts : on essaie chaque clé partagée
             for (contact in manager.knownContacts()) {
                 val cle = manager.sharedKeyWith(contact.id) ?: continue
                 val clair = CryptoEngine.decrypt(chiffre, cle) ?: continue
-                resultat.add(Recu(contact.id, String(clair, Charsets.UTF_8)))
+                val texte = String(clair, Charsets.UTF_8)
+                // Format attendu : ID:<msgId>|<texte>
+                if (!texte.startsWith("ID:") || !texte.contains("|")) break
+                val msgId = texte.substring(3, texte.indexOf("|"))
+                val corps = texte.substring(texte.indexOf("|") + 1)
+                resultat.add(Recu(contact.id, msgId, corps))
+                // Accusé « reçu » renvoyé à l'expéditeur par le relais
+                RelayAck.deposerAccuse(context, contact.id, msgId, cle)
                 break
             }
         }
