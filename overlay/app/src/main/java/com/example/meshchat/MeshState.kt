@@ -48,7 +48,7 @@ data class ChatBubble(
 /** Ordre d'avancement d'un statut : un message ne revient jamais à un statut moins avancé. */
 private fun rank(status: String?): Int = when (status) {
     "✓✓ Lu" -> 5
-    "✓✓ " -> 4
+    "✓✓ Reçu" -> 4
     "✓ Parti" -> 3
     "⏳ En attente" -> 2
     "✗ Non envoyé" -> 1
