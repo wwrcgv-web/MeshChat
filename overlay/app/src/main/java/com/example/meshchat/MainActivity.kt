@@ -225,6 +225,8 @@ class MainActivity : ComponentActivity() {
 
     private val enableBluetooth = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { }
 
+    private val main = Handler(Looper.getMainLooper())
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppState.liveOn = getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean("live_on", false)
@@ -256,8 +258,6 @@ class MainActivity : ComponentActivity() {
             }
         }.start()
     }
-
-    private val main = Handler(Looper.getMainLooper())
 
     override fun onStop() {
         super.onStop()
@@ -631,7 +631,6 @@ private fun MeshHome(
 
     fun log(line: String) = MeshState.addJournal(line)
 
-    // Au lancement : demander d'activer le Bluetooth s'il est éteint
     LaunchedEffect(Unit) {
         val bt = BluetoothAdapter.getDefaultAdapter()
         if (bt != null && !bt.isEnabled) showBluetoothAsk = true
@@ -727,7 +726,7 @@ private fun MeshHome(
                 draft = ""
             } else if (target != null) {
                 val cle = manager.sharedKeyWith(target)
-                envoyerParRelais(context, cle, target, draft) != null) {
+                if (cle != null && RelayDispatch.envoyerParRelais(context, cle, target, draft) != null) {
                     MeshState.addBubble(
                         ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}")
                     )
@@ -868,6 +867,7 @@ private fun MeshHome(
     }
 
     if (myName.isBlank()) {
+        var nameInput by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { },
             title = { Text(t("welcome")) },
