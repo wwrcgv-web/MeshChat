@@ -88,8 +88,8 @@ class VoiceRecorder(private val context: Context) {
             rec.setAudioSource(MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            rec.setAudioEncodingBitRate(12_000)
-            rec.setAudioSamplingRate(16_000)
+            rec.setAudioEncodingBitRate(64_000)
+            rec.setAudioSamplingRate(44_100)
             rec.setAudioChannels(1)
             rec.setOutputFile(out.absolutePath)
             rec.prepare()
@@ -251,14 +251,15 @@ class MainActivity : ComponentActivity() {
             manager.openChatPeer = AppState.openChat
             AppState.openChat?.let { manager.markRead(it) }
         }
-        // Au retour dans Samchat : relève les messages et les accusés du relais, si Internet est activé
+        // Au retour dans Samchat : relève les messages, les fichiers et les accusés du relais, si Internet est activé
         Thread {
             RelayReceive.releverEtDechiffrer(this).forEach { recu ->
                 main.post { MeshState.addRelayReceived(recu.expediteurId, recu.texte) }
             }
-            RelayAck. RelayFileReceive.releverEtReconstituer(this).forEach { fichier ->
+            RelayFileReceive.releverEtReconstituer(this).forEach { fichier ->
                 main.post { MeshState.addRelayFile(fichier.expediteurId, fichier.type, fichier.donnees) }
-            }releverAccuses(this).forEach { msgId ->
+            }
+            RelayAck.releverAccuses(this).forEach { msgId ->
                 main.post { MeshState.confirmerRelais(msgId) }
             }
         }.start()
@@ -318,12 +319,12 @@ private fun bubbleTitle(b: ChatBubble): String = when {
 }
 
 private fun compressPhoto(source: Bitmap): ByteArray {
-    val scale = 800f / maxOf(source.width, source.height)
+    val scale = 1600f / maxOf(source.width, source.height)
     val small = if (scale < 1f) {
         Bitmap.createScaledBitmap(source, (source.width * scale).toInt().coerceAtLeast(1), (source.height * scale).toInt().coerceAtLeast(1), true)
     } else source
     val out = ByteArrayOutputStream()
-    small.compress(Bitmap.CompressFormat.JPEG, 75, out)
+    small.compress(Bitmap.CompressFormat.JPEG, 90, out)
     return out.toByteArray()
 }
 
@@ -747,7 +748,10 @@ private fun MeshHome(
             }
         }
         pendingPhoto?.let { photo ->
-            val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
+            val cleFoto = if (target != null) manager.sharedKeyWith(target) else null
+            val viaRelais = cleFoto != null && RelayClient.isEnabled(context) &&
+                RelayFile.envoyer(context, cleFoto, target, compressPhoto(photo), "photo")
+            val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
                 MeshState.addBubble(
                     ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
@@ -779,7 +783,10 @@ private fun MeshHome(
         }
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
-        val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
+        val cleAudio = if (target != null) manager.sharedKeyWith(target) else null
+        val viaRelais = cleAudio != null && RelayClient.isEnabled(context) &&
+            RelayFile.envoyer(context, cleAudio, target, bytes, "audio")
+        val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
         if (sent > 0) {
             val sentId = manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
