@@ -790,7 +790,7 @@ private fun MeshHome(
         val viaRelais = fileIdAudio != null
         val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
         if (sent > 0) {
-            val sentId = manager.lastSentId
+             val sentId = fileIdAudio ?: manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
             MeshState.addBubble(
