@@ -256,7 +256,9 @@ class MainActivity : ComponentActivity() {
             RelayReceive.releverEtDechiffrer(this).forEach { recu ->
                 main.post { MeshState.addRelayReceived(recu.expediteurId, recu.texte) }
             }
-            RelayAck.releverAccuses(this).forEach { msgId ->
+            RelayAck.            RelayFileReceive.releverEtReconstituer(this).forEach { fichier ->
+                main.post { MeshState.addRelayFile(fichier.expediteurId, fichier.type, fichier.donnees) }
+            }releverAccuses(this).forEach { msgId ->
                 main.post { MeshState.confirmerRelais(msgId) }
             }
         }.start()
