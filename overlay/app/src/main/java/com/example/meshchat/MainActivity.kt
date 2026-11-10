@@ -749,8 +749,9 @@ private fun MeshHome(
         }
         pendingPhoto?.let { photo ->
             val cleFoto = if (target != null) manager.sharedKeyWith(target) else null
-            val viaRelais = cleFoto != null && RelayClient.isEnabled(context) &&
-                RelayFile.envoyer(context, cleFoto, target!!, compressPhoto(photo), "photo")
+                        val fileIdFoto = if (cleFoto != null && RelayClient.isEnabled(context))
+                RelayFile.envoyer(context, cleFoto, target!!, compressPhoto(photo), "photo") else null
+            val viaRelais = fileIdFoto != null
             val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
             if (sent > 0) {
                 MeshState.addBubble(
@@ -784,8 +785,9 @@ private fun MeshHome(
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val cleAudio = if (target != null) manager.sharedKeyWith(target) else null
-        val viaRelais = cleAudio != null && RelayClient.isEnabled(context) &&
-            RelayFile.envoyer(context, cleAudio, target!!, bytes, "audio")
+                val fileIdAudio = if (cleAudio != null && RelayClient.isEnabled(context))
+            RelayFile.envoyer(context, cleAudio, target!!, bytes, "audio") else null
+        val viaRelais = fileIdAudio != null
         val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
         if (sent > 0) {
             val sentId = manager.lastSentId
