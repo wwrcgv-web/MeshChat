@@ -371,6 +371,26 @@ object MeshState {
         notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", texte)
     }
 
+    /**
+     * Photo ou vocal complet reçu par le relais Internet. Même affichage que le Bluetooth,
+     * avec le statut « 🌐 Reçu ».
+     */
+    fun addRelayFile(expediteurId: String, type: String, donnees: ByteArray) {
+        val context = appContext ?: return
+        if (type == "photo") {
+            BitmapFactory.decodeByteArray(donnees, 0, donnees.size)?.let { photo ->
+                addBubble(ChatBubble(false, expediteurId, "Photo reçue", photo, expediteurId, status = "🌐 Reçu"))
+                notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", "Photo reçue")
+            }
+        } else if (type == "audio") {
+            val file = File(context.cacheDir, "vocal_relais_${System.currentTimeMillis()}.m4a")
+            file.writeBytes(donnees)
+            addBubble(ChatBubble(false, expediteurId, "Vocal reçu", null, expediteurId, file.absolutePath, status = "🌐 Reçu"))
+            notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", "Vocal reçu")
+        }
+        count("in_file")
+    }
+
     /** Accusé « reçu » par le relais : passe le message envoyé par relais à « ✓✓ Reçu ». */
     fun confirmerRelais(msgId: String) {
         setStatus(msgId, "✓✓ Reçu")
