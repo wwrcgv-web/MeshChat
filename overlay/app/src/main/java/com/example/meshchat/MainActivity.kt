@@ -1311,3 +1311,14 @@ private fun BubbleRow(
         }
     }
 }
+                    if (pending && b.audio == null && b.image == null) {
+                        Text(
+                            "✕ Annuler",
+                            color = SamchatColors.Danger,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clickable { onLongPress(b) }
+                                .padding(vertical = 4.dp)
+                        )
+                    }
