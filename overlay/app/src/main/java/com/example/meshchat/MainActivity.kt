@@ -713,7 +713,7 @@ private fun MeshHome(
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    fun send() {
+        fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
             log(t("service_off"))
@@ -721,21 +721,27 @@ private fun MeshHome(
         }
         val target = if (selectedChat == PUBLIC) null else selectedChat
         if (draft.isNotBlank()) {
-            val sent = manager.sendMessage(draft, target)
-            if (sent > 0) {
+            val texte = draft
+            val cle = if (target != null) manager.sharedKeyWith(target) else null
+            // Internet d'abord, si activé et si le contact est connu : le texte passe par le relais
+            val relayId = if (target != null && cle != null && RelayClient.isEnabled(context)) {
+                RelayDispatch.envoyerParRelais(context, cle, target, texte)
+            } else null
+            if (relayId != null) {
                 MeshState.addBubble(
-                    ChatBubble(true, "moi", draft, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
+                    ChatBubble(true, "moi", texte, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
                 )
                 draft = ""
-            } else if (target != null) {
-                val cle = manager.sharedKeyWith(target)
-                val relayId = if (cle != null) RelayDispatch.envoyerParRelais(context, cle, target, draft) else null
-                if (relayId != null) {
-                    // La bulle garde l'identifiant du relais : l'accusé pourra la passer à « Reçu »
+            } else {
+                // Pas d'Internet, ou dépôt refusé : repli sur le Bluetooth, pour ne pas perdre le message
+                val sent = manager.sendMessage(texte, target)
+                if (sent > 0) {
                     MeshState.addBubble(
-                        ChatBubble(true, "moi", draft, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
+                        ChatBubble(true, "moi", texte, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
                     )
                     draft = ""
+                } else {
+                    log(t("send_fail"))
                 }
             }
         }
@@ -748,9 +754,7 @@ private fun MeshHome(
                 pendingPhoto = null
             }
         }
-    }
-
-    fun startVoice() {
+        }
         if (BleMeshManager.instance == null) {
             log(t("service_off"))
             return
