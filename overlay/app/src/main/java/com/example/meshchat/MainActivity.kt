@@ -611,7 +611,6 @@ private fun MeshHome(
     var recording by remember { mutableStateOf(false) }
     var liveHolding by remember { mutableStateOf(false) }
     var liveStreamer by remember { mutableStateOf<LiveStreamer?>(null) }
-    var nameInput by remember { mutableStateOf("") }
 
     val chatState = rememberLazyListState()
     val context = LocalContext.current
@@ -713,7 +712,7 @@ private fun MeshHome(
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-        fun send() {
+    fun send() {
         val manager = BleMeshManager.instance
         if (manager == null) {
             log(t("service_off"))
@@ -754,7 +753,9 @@ private fun MeshHome(
                 pendingPhoto = null
             }
         }
-        }
+    }
+
+    fun startVoice() {
         if (BleMeshManager.instance == null) {
             log(t("service_off"))
             return
