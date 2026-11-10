@@ -1258,6 +1258,17 @@ private fun BubbleRow(
                     if (pending && (b.audio != null || b.image != null)) {
                         PendingCircle(green)
                     }
+                    if (pending && b.audio == null && b.image == null) {
+                        Text(
+                            "✕ Annuler",
+                            color = SamchatColors.Danger,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .clickable { onLongPress(b) }
+                                .padding(vertical = 4.dp)
+                        )
+                    }
                     b.audio?.let { path ->
                         if (pending) {
                             Text("⏳ ${t("voice")}", color = grey, fontSize = 14.sp)
@@ -1311,14 +1322,3 @@ private fun BubbleRow(
         }
     }
 }
-                    
-                        Text(
-                            "✕ Annuler",
-                            color = SamchatColors.Danger,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier
-                                .clickable { onLongPress(b) }
-                                .padding(vertical = 4.dp)
-                        )
-                    }
