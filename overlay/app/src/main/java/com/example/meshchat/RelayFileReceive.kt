@@ -7,6 +7,7 @@ import javax.crypto.SecretKey
 /**
  * Réception des fichiers (photo, vocal) envoyés par le relais Internet, en morceaux.
  * Relève les morceaux, les range par identifiant de fichier, et renvoie les fichiers complets.
+ * Une fois un fichier reconstitué, un accusé « REÇU » est déposé pour l'expéditeur.
  * Les morceaux incomplets restent en attente et expirent avec le relais (24 heures).
  */
 object RelayFileReceive {
@@ -33,6 +34,8 @@ object RelayFileReceive {
                 if (donnees != null) {
                     complets.add(FichierRecu(contact.id, morceau.type, donnees))
                     enAttente.remove(morceau.fileId)
+                    // Accusé « REÇU » pour le fichier complet, renvoyé à l'expéditeur
+                    RelayAck.deposerAccuse(context, contact.id, morceau.fileId, cle)
                 }
                 break
             }
