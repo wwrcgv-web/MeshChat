@@ -124,7 +124,7 @@ private fun NavItem(icon: String, label: String, selected: Boolean, onClick: () 
     }
 }
 
-/** Écran d'accueil : logo, ⋮ (Réglages) en haut à droite, recherche, filtres, liste, barre du bas à deux entrées. */
+/** Écran d'accueil : logo, ⋮ (Réglages) en haut à droite, sélecteur de mode, recherche, filtres, liste, barre du bas à deux entrées. */
 @Composable
 fun ChatListScreen(
     context: Context,
@@ -141,6 +141,7 @@ fun ChatListScreen(
     var tab by remember { mutableStateOf(0) }
     var filter by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
+    var internetOn by remember { mutableStateOf(RelayClient.isEnabled(context)) }
 
     fun previewOf(b: ChatBubble?): String = when {
         b == null -> t("no_message")
@@ -181,6 +182,11 @@ fun ChatListScreen(
             }
 
             if (tab == 0) {
+                ModeSelector(internetOn = internetOn) { on ->
+                    internetOn = on
+                    RelayClient.setEnabled(context, on)
+                }
+                Spacer(Modifier.height(8.dp))
                 TextField(
                     value = query,
                     onValueChange = { query = it },
