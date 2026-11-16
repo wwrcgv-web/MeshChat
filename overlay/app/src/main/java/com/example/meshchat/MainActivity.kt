@@ -251,18 +251,19 @@ class MainActivity : ComponentActivity() {
             manager.openChatPeer = AppState.openChat
             AppState.openChat?.let { manager.markRead(it) }
         }
-        // Au retour dans Samchat : relève les messages, les fichiers et les accusés du relais, si Internet est activé
-        Thread {
-            RelayReceive.releverEtDechiffrer(this).forEach { recu ->
-                main.post { MeshState.addRelayReceived(recu.expediteurId, recu.texte) }
+        // Relève les messages du relais toutes les 5 secondes quand l'app est visible
+        RelayPoll.start(lifecycleScope, this) { result ->
+            when (result) {
+                is RelayPoll.RelayResult.Text -> MeshState.addRelayReceived(result.expediteurId, result.texte)
+                is RelayPoll.RelayResult.File -> MeshState.addRelayFile(result.expediteurId, result.type, result.donnees)
+                is RelayPoll.RelayResult.Ack -> MeshState.confirmerRelais(result.msgId)
             }
-            RelayFileReceive.releverEtReconstituer(this).forEach { fichier ->
-                main.post { MeshState.addRelayFile(fichier.expediteurId, fichier.type, fichier.donnees) }
-            }
-            RelayAck.releverAccuses(this).forEach { msgId ->
-                main.post { MeshState.confirmerRelais(msgId) }
-            }
-        }.start()
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        RelayPoll.stop()
     }
 
     override fun onStop() {
@@ -591,7 +592,6 @@ private fun CircleButton(label: String, background: Color, textColor: Color, siz
         Text(label, color = textColor, fontSize = 20.sp)
     }
 }
-
 @Composable
 private fun MeshHome(
     onStart: () -> Unit,
@@ -725,7 +725,6 @@ private fun MeshHome(
         if (draft.isNotBlank()) {
             val texte = draft
             val cle = if (target != null) manager.sharedKeyWith(target) else null
-            // Internet d'abord, si activé et si le contact est connu : le texte passe par le relais
             val relayId = if (target != null && cle != null && RelayClient.isEnabled(context)) {
                 RelayDispatch.envoyerParRelais(context, cle, target, texte)
             } else null
@@ -735,7 +734,6 @@ private fun MeshHome(
                 )
                 draft = ""
             } else {
-                // Pas d'Internet, ou dépôt refusé : repli sur le Bluetooth, pour ne pas perdre le message
                 val sent = manager.sendMessage(texte, target)
                 if (sent > 0) {
                     MeshState.addBubble(
@@ -749,7 +747,7 @@ private fun MeshHome(
         }
         pendingPhoto?.let { photo ->
             val cleFoto = if (target != null) manager.sharedKeyWith(target) else null
-                        val fileIdFoto = if (cleFoto != null && RelayClient.isEnabled(context))
+            val fileIdFoto = if (cleFoto != null && RelayClient.isEnabled(context))
                 RelayFile.envoyer(context, cleFoto, target!!, compressPhoto(photo), "photo") else null
             val viaRelais = fileIdFoto != null
             val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
@@ -785,12 +783,12 @@ private fun MeshHome(
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val cleAudio = if (target != null) manager.sharedKeyWith(target) else null
-                val fileIdAudio = if (cleAudio != null && RelayClient.isEnabled(context))
+        val fileIdAudio = if (cleAudio != null && RelayClient.isEnabled(context))
             RelayFile.envoyer(context, cleAudio, target!!, bytes, "audio") else null
         val viaRelais = fileIdAudio != null
         val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
         if (sent > 0) {
-             val sentId = fileIdAudio ?: manager.lastSentId
+            val sentId = fileIdAudio ?: manager.lastSentId
             val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
             file.writeBytes(bytes)
             MeshState.addBubble(
