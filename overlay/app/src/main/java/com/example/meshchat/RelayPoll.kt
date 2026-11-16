@@ -1,10 +1,3 @@
-Le problème vient de `RelayAck`. Si tu l'as supprimé ou modifié, `RelayPoll.kt` ne le trouve plus.
-
-Je vais te donner une version corrigée de `RelayPoll.kt` qui **ne dépend plus du tout de `RelayAck.kt`**. Elle gère elle-même l'envoi des accusés.
-
-Remplace tout le contenu de `RelayPoll.kt` par celui-ci :
-
-```kotlin
 package com.example.meshchat
 
 import android.content.Context
@@ -210,24 +203,3 @@ object RelayPoll {
         return true
     }
 }
-```
-
----
-
-## Changements par rapport à avant
-
-1. **Plus de référence à `RelayAck`** : la fonction `deposerAccuse()` est maintenant dans `RelayPoll.kt`.
-2. **Type explicite** : `val liste: MutableList<RelayChunks.MorceauRecu>` corrige l'inférence de type.
-
----
-
-## Fichiers à supprimer maintenant
-
-Tu peux supprimer sans risque :
-- `RelayReceive.kt`
-- `RelayFileReceive.kt`
-- `RelayAck.kt` (entièrement, car `RelayPoll.kt` le remplace)
-
----
-
-Réessaie la compilation et dis-moi ce que ça donne.
