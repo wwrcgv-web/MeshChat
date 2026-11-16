@@ -1,3 +1,10 @@
+Le problème vient de `RelayAck`. Si tu l'as supprimé ou modifié, `RelayPoll.kt` ne le trouve plus.
+
+Je vais te donner une version corrigée de `RelayPoll.kt` qui **ne dépend plus du tout de `RelayAck.kt`**. Elle gère elle-même l'envoi des accusés.
+
+Remplace tout le contenu de `RelayPoll.kt` par celui-ci :
+
+```kotlin
 package com.example.meshchat
 
 import android.content.Context
@@ -113,7 +120,7 @@ object RelayPoll {
 
         // Envoie l'accusé en arrière-plan
         withContext(Dispatchers.IO) {
-            RelayAck.deposerAccuse(context, expediteurId, msgId, cle)
+            deposerAccuse(context, expediteurId, msgId, cle)
         }
 
         withContext(Dispatchers.Main) {
@@ -132,7 +139,9 @@ object RelayPoll {
         val dedupKey = "file:${morceau.fileId}:${morceau.numero}"
         if (!marquerTraite(dedupKey)) return
 
-        val liste = pendingFileChunks.getOrPut(morceau.fileId) { mutableListOf() }
+        val liste: MutableList<RelayChunks.MorceauRecu> = pendingFileChunks.getOrPut(morceau.fileId) {
+            mutableListOf<RelayChunks.MorceauRecu>()
+        }
         if (liste.none { it.numero == morceau.numero }) {
             liste.add(morceau)
         }
@@ -145,7 +154,7 @@ object RelayPoll {
 
         // Envoie l'accusé en arrière-plan
         withContext(Dispatchers.IO) {
-            RelayAck.deposerAccuse(context, expediteurId, morceau.fileId, cle)
+            deposerAccuse(context, expediteurId, morceau.fileId, cle)
         }
 
         withContext(Dispatchers.Main) {
@@ -178,6 +187,18 @@ object RelayPoll {
         }
     }
 
+    /** Dépose un accusé « reçu » pour un message ou un fichier. */
+    private fun deposerAccuse(context: Context, expediteurId: String, messageId: String, cle: SecretKey): Boolean {
+        if (!RelayClient.isEnabled(context)) return false
+        return try {
+            val chiffre = CryptoEngine.encrypt((PREFIX_ACK + messageId).toByteArray(Charsets.UTF_8), cle)
+            val contenu = Base64.encodeToString(chiffre, Base64.NO_WRAP)
+            RelayClient.deposer(context, RelayDispatch.hacherDestinataire(expediteurId), contenu)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     @Synchronized
     private fun marquerTraite(id: String): Boolean {
         if (id in processedIds) return false
@@ -189,3 +210,24 @@ object RelayPoll {
         return true
     }
 }
+```
+
+---
+
+## Changements par rapport à avant
+
+1. **Plus de référence à `RelayAck`** : la fonction `deposerAccuse()` est maintenant dans `RelayPoll.kt`.
+2. **Type explicite** : `val liste: MutableList<RelayChunks.MorceauRecu>` corrige l'inférence de type.
+
+---
+
+## Fichiers à supprimer maintenant
+
+Tu peux supprimer sans risque :
+- `RelayReceive.kt`
+- `RelayFileReceive.kt`
+- `RelayAck.kt` (entièrement, car `RelayPoll.kt` le remplace)
+
+---
+
+Réessaie la compilation et dis-moi ce que ça donne.
