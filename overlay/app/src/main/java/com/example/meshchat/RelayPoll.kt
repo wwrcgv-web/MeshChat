@@ -1,3 +1,8 @@
+Le problème vient probablement d'un caractère ou d'un texte en trop à la fin du fichier `RelayPoll.kt`. Peut-être que tu as copié une partie de mes explications dans le fichier.
+
+**Supprime entièrement le fichier `RelayPoll.kt` actuel**, puis recrée-le avec **uniquement** ce contenu :
+
+```kotlin
 package com.example.meshchat
 
 import android.content.Context
@@ -7,12 +12,6 @@ import com.example.meshchat.crypto.CryptoEngine
 import kotlinx.coroutines.*
 import javax.crypto.SecretKey
 
-/**
- * Relève unique et périodique des messages du relais Internet.
- * Corrige :
- * - Erreur 3 : une seule relève au lieu de trois.
- * - Erreur 4 : polling toutes les 5 secondes quand l'app est ouverte.
- */
 object RelayPoll {
 
     private const val PERIOD_MS = 5_000L
@@ -22,7 +21,6 @@ object RelayPoll {
     private const val PREFIX_FILE = "CH:"
     private const val PREFIX_ACK = "REÇU:"
 
-    /** Résultat d'une relève. */
     sealed class RelayResult {
         data class Text(val expediteurId: String, val msgId: String, val texte: String) : RelayResult()
         data class File(val expediteurId: String, val type: String, val donnees: ByteArray) : RelayResult()
@@ -33,7 +31,6 @@ object RelayPoll {
     private val processedIds = LinkedHashSet<String>()
     private var pollJob: Job? = null
 
-    /** Démarre le polling régulier. */
     fun start(scope: CoroutineScope, context: Context, onResult: (RelayResult) -> Unit) {
         stop()
         pollJob = scope.launch(Dispatchers.IO) {
@@ -44,16 +41,11 @@ object RelayPoll {
         }
     }
 
-    /** Arrête le polling. */
     fun stop() {
         pollJob?.cancel()
         pollJob = null
     }
 
-    /**
-     * Relève et traite une fois les messages du relais.
-     * Peut aussi être appelée manuellement.
-     */
     suspend fun pollOnce(context: Context, onResult: (RelayResult) -> Unit) {
         withContext(Dispatchers.IO) {
             if (!RelayClient.isEnabled(context)) return@withContext
@@ -111,7 +103,6 @@ object RelayPoll {
 
         if (!marquerTraite("text:$msgId")) return
 
-        // Envoie l'accusé en arrière-plan
         withContext(Dispatchers.IO) {
             deposerAccuse(context, expediteurId, msgId, cle)
         }
@@ -140,12 +131,11 @@ object RelayPoll {
         }
 
         val donnees = RelayChunks.reassembler(liste)
-        if (donnees == null) return // fichier encore incomplet
+        if (donnees == null) return
 
         pendingFileChunks.remove(morceau.fileId)
         marquerTraite("filecomplete:${morceau.fileId}")
 
-        // Envoie l'accusé en arrière-plan
         withContext(Dispatchers.IO) {
             deposerAccuse(context, expediteurId, morceau.fileId, cle)
         }
@@ -180,7 +170,6 @@ object RelayPoll {
         }
     }
 
-    /** Dépose un accusé « reçu » pour un message ou un fichier. */
     private fun deposerAccuse(context: Context, expediteurId: String, messageId: String, cle: SecretKey): Boolean {
         if (!RelayClient.isEnabled(context)) return false
         return try {
@@ -196,10 +185,19 @@ object RelayPoll {
     private fun marquerTraite(id: String): Boolean {
         if (id in processedIds) return false
         processedIds.add(id)
-        // Évite que la mémoire ne grossisse indéfiniment
         while (processedIds.size > MAX_PROCESSED_IDS) {
             processedIds.remove(processedIds.first())
         }
         return true
     }
 }
+```
+
+---
+
+**Vérifie bien :**
+- Le fichier commence par `package com.example.meshchat`
+- Le fichier finit par `}` (seul sur la dernière ligne)
+- Il n'y a **aucun autre texte** avant ou après
+
+Réessaie et dis-moi si la compilation passe.
