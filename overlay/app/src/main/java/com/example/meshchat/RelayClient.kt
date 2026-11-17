@@ -15,7 +15,6 @@ import java.net.URLEncoder
 object RelayClient {
     const val BASE_URL = "https://samchat-relais.wwrcgv.workers.dev"
     private const val PREF_INTERNET = "internet_on"
-    private const val PREF_TOKEN = "relay_token"
     private const val TIMEOUT_MS = 10_000
 
     fun isEnabled(context: Context): Boolean =
@@ -25,13 +24,17 @@ object RelayClient {
         context.getSharedPreferences("meshchat", Context.MODE_PRIVATE).edit().putBoolean(PREF_INTERNET, on).apply()
     }
 
-    /** Jeton saisi par l'utilisateur dans les Réglages. Jamais écrit dans le code. */
+    /**
+     * Ancienne saisie du jeton dans les Réglages : sans effet, le jeton est maintenant intégré à l'application.
+     * Gardée seulement pour que l'écran des Réglages compile encore.
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun saveToken(context: Context, token: String) {
-        context.getSharedPreferences("meshchat", Context.MODE_PRIVATE).edit().putString(PREF_TOKEN, token.trim()).apply()
     }
 
-    private fun token(context: Context): String =
-        context.getSharedPreferences("meshchat", Context.MODE_PRIVATE).getString(PREF_TOKEN, "") ?: ""
+    /** Jeton intégré à l'application au moment de la compilation (secret GitHub RELAY_TOKEN). */
+    @Suppress("UNUSED_PARAMETER")
+    private fun token(context: Context): String = BuildConfig.RELAY_TOKEN
 
     /**
      * Dépose un message chiffré pour un destinataire (identifiant haché).
