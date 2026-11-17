@@ -1,8 +1,3 @@
-Le problème vient probablement d'un caractère ou d'un texte en trop à la fin du fichier `RelayPoll.kt`. Peut-être que tu as copié une partie de mes explications dans le fichier.
-
-**Supprime entièrement le fichier `RelayPoll.kt` actuel**, puis recrée-le avec **uniquement** ce contenu :
-
-```kotlin
 package com.example.meshchat
 
 import android.content.Context
@@ -13,10 +8,8 @@ import kotlinx.coroutines.*
 import javax.crypto.SecretKey
 
 object RelayPoll {
-
     private const val PERIOD_MS = 5_000L
     private const val MAX_PROCESSED_IDS = 2_000
-
     private const val PREFIX_TEXT = "ID:"
     private const val PREFIX_FILE = "CH:"
     private const val PREFIX_ACK = "REÇU:"
@@ -52,19 +45,16 @@ object RelayPoll {
             val manager = BleMeshManager.instance ?: return@withContext
             val monHache = RelayDispatch.hacherDestinataire(manager.myIdHex)
             val messages = RelayClient.relever(context, monHache)
-
             for (contenu in messages) {
                 val chiffre = try {
                     Base64.decode(contenu, Base64.NO_WRAP)
                 } catch (e: Exception) {
                     continue
                 }
-
                 var dechiffre = false
                 for (contact in manager.knownContacts()) {
                     val cle = manager.sharedKeyWith(contact.id) ?: continue
                     val clair = CryptoEngine.decrypt(chiffre, cle) ?: continue
-
                     dechiffre = true
                     traiterClair(context, contact.id, clair, cle, onResult)
                     break
@@ -73,15 +63,8 @@ object RelayPoll {
         }
     }
 
-    private suspend fun traiterClair(
-        context: Context,
-        expediteurId: String,
-        clair: ByteArray,
-        cle: SecretKey,
-        onResult: (RelayResult) -> Unit
-    ) {
+    private suspend fun traiterClair(context: Context, expediteurId: String, clair: ByteArray, cle: SecretKey, onResult: (RelayResult) -> Unit) {
         val texte = String(clair, Charsets.UTF_8)
-
         when {
             texte.startsWith(PREFIX_TEXT) -> traiterTexte(context, expediteurId, texte, cle, onResult)
             texte.startsWith(PREFIX_FILE) -> traiterFichier(context, expediteurId, texte, cle, onResult)
@@ -89,60 +72,32 @@ object RelayPoll {
         }
     }
 
-    private suspend fun traiterTexte(
-        context: Context,
-        expediteurId: String,
-        texte: String,
-        cle: SecretKey,
-        onResult: (RelayResult) -> Unit
-    ) {
+    private suspend fun traiterTexte(context: Context, expediteurId: String, texte: String, cle: SecretKey, onResult: (RelayResult) -> Unit) {
         val sep = texte.indexOf('|')
         if (sep == -1) return
         val msgId = texte.substring(PREFIX_TEXT.length, sep)
         val corps = texte.substring(sep + 1)
-
         if (!marquerTraite("text:$msgId")) return
-
-        withContext(Dispatchers.IO) {
-            deposerAccuse(context, expediteurId, msgId, cle)
-        }
-
-        withContext(Dispatchers.Main) {
-            onResult(RelayResult.Text(expediteurId, msgId, corps))
-        }
+        withContext(Dispatchers.IO) { deposerAccuse(context, expediteurId, msgId, cle) }
+        withContext(Dispatchers.Main) { onResult(RelayResult.Text(expediteurId, msgId, corps)) }
     }
 
-    private suspend fun traiterFichier(
-        context: Context,
-        expediteurId: String,
-        texte: String,
-        cle: SecretKey,
-        onResult: (RelayResult) -> Unit
-    ) {
+    private suspend fun traiterFichier(context: Context, expediteurId: String, texte: String, cle: SecretKey, onResult: (RelayResult) -> Unit) {
         val morceau = parseMorceau(texte) ?: return
         val dedupKey = "file:${morceau.fileId}:${morceau.numero}"
         if (!marquerTraite(dedupKey)) return
-
         val liste: MutableList<RelayChunks.MorceauRecu> = pendingFileChunks.getOrPut(morceau.fileId) {
             mutableListOf<RelayChunks.MorceauRecu>()
         }
         if (liste.none { it.numero == morceau.numero }) {
             liste.add(morceau)
         }
-
         val donnees = RelayChunks.reassembler(liste)
         if (donnees == null) return
-
         pendingFileChunks.remove(morceau.fileId)
         marquerTraite("filecomplete:${morceau.fileId}")
-
-        withContext(Dispatchers.IO) {
-            deposerAccuse(context, expediteurId, morceau.fileId, cle)
-        }
-
-        withContext(Dispatchers.Main) {
-            onResult(RelayResult.File(expediteurId, morceau.type, donnees))
-        }
+        withContext(Dispatchers.IO) { deposerAccuse(context, expediteurId, morceau.fileId, cle) }
+        withContext(Dispatchers.Main) { onResult(RelayResult.File(expediteurId, morceau.type, donnees)) }
     }
 
     private fun parseMorceau(texte: String): RelayChunks.MorceauRecu? {
@@ -165,9 +120,7 @@ object RelayPoll {
     private suspend fun traiterAccuse(texte: String, onResult: (RelayResult) -> Unit) {
         val msgId = texte.removePrefix(PREFIX_ACK)
         if (!marquerTraite("ack:$msgId")) return
-        withContext(Dispatchers.Main) {
-            onResult(RelayResult.Ack(msgId))
-        }
+        withContext(Dispatchers.Main) { onResult(RelayResult.Ack(msgId)) }
     }
 
     private fun deposerAccuse(context: Context, expediteurId: String, messageId: String, cle: SecretKey): Boolean {
@@ -191,13 +144,3 @@ object RelayPoll {
         return true
     }
 }
-```
-
----
-
-**Vérifie bien :**
-- Le fichier commence par `package com.example.meshchat`
-- Le fichier finit par `}` (seul sur la dernière ligne)
-- Il n'y a **aucun autre texte** avant ou après
-
-Réessaie et dis-moi si la compilation passe.
