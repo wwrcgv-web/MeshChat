@@ -243,27 +243,14 @@ class MainActivity : ComponentActivity() {
         if (BleMeshManager.instance == null) askPermissions()
     }
 
-    override fun onResume() {
+       override fun onResume() {
         super.onResume()
         Lang.load(this)
-        val manager = BleMeshManager.instance
-        if (manager != null) {
-                    // Relève les messages du relais toutes les 5 secondes quand l'app est visible
-        RelayPoll.start(lifecycleScope, this) { result ->
-            when (result) {
-                is RelayPoll.RelayResult.Text -> MeshState.addRelayReceived(result.senderId, result.text)
-                is RelayPoll.RelayResult.File -> MeshState.addRelayFile(result.senderId, result.type, result.data)
-                is RelayPoll.RelayResult.Ack -> MeshState.confirmerRelais(result.msgId)
-            }
-        }
+       } 
 
-        }
-    }
-
-    override fun onPause() {
+        override fun onPause() {
         super.onPause()
-        RelayPoll.stop()
-    }
+        }
 
     override fun onStop() {
         super.onStop()
