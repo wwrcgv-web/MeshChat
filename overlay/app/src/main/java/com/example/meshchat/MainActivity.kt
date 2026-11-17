@@ -1,5 +1,6 @@
 package com.example.meshchat
 
+import androidx.lifecycle.lifecycleScope
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
 import android.content.ClipData
