@@ -741,23 +741,39 @@ private fun MeshHome(
             }
         }
 
-        pendingPhoto?.let { photo ->
+               pendingPhoto?.let { photo ->
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
-            val fileId = if (key != null && RelayClient.isEnabled(context)) {
-                RelayFile.envoyer(context, key, target!!, compressPhoto(photo), "photo")
-            } else null
-            val viaRelay = fileId != null
-            val sent = if (viaRelay) 1 else manager?.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target) ?: 0
-            if (sent > 0) {
-                MeshState.addBubble(
-                    ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = initialStatus(target), msgId = manager?.lastSentId)
-                )
+            if (target != null && key != null && RelayClient.isEnabled(context)) {
+                // Envoi par Internet : compression et dépôt dans un autre fil, l'écran reste fluide
                 pendingPhoto = null
-            } else if (manager == null) {
+                Thread {
+                    val fileId = RelayFile.envoyer(context, key, target, compressPhoto(photo), "photo")
+                    Handler(Looper.getMainLooper()).post {
+                        if (fileId != null) {
+                            MeshState.addBubble(
+                                ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = "🌐 ${t("sent")}", msgId = fileId)
+                            )
+                        } else {
+                            // Échec : la photo reste en attente, rien n'est perdu
+                            pendingPhoto = photo
+                            log(t("send_fail"))
+                        }
+                    }
+                }.start()
+            } else if (manager != null) {
+                val sent = manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
+                if (sent > 0) {
+                    MeshState.addBubble(
+                        ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
+                    )
+                    pendingPhoto = null
+                } else {
+                    log(t("send_fail"))
+                }
+            } else {
                 log(t("service_off"))
             }
-        }
-    }
+               } 
 
     fun startVoice() {
         if (BleMeshManager.instance == null) {
