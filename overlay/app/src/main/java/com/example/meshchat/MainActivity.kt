@@ -714,47 +714,51 @@ private fun MeshHome(
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-    fun send() {
+        fun send() {
         val manager = BleMeshManager.instance
-        if (manager == null) {
-            log(t("service_off"))
-            return
-        }
         val target = if (selectedChat == PUBLIC) null else selectedChat
+
         if (draft.isNotBlank()) {
-            val texte = draft
-            val cle = if (target != null) manager.sharedKeyWith(target) else null
-            val relayId = if (target != null && cle != null && RelayClient.isEnabled(context)) {
-                RelayDispatch.envoyerParRelais(context, cle, target, texte)
+            val text = draft
+            val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
+            val relayId = if (target != null && key != null && RelayClient.isEnabled(context)) {
+                RelayDispatch.envoyerParRelais(context, key, target, text)
             } else null
+
             if (relayId != null) {
                 MeshState.addBubble(
-                    ChatBubble(true, "moi", texte, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
+                    ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
                 )
                 draft = ""
-            } else {
-                val sent = manager.sendMessage(texte, target)
+            } else if (manager != null) {
+                val sent = manager.sendMessage(text, target)
                 if (sent > 0) {
                     MeshState.addBubble(
-                        ChatBubble(true, "moi", texte, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
+                        ChatBubble(true, "moi", text, null, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
                     )
                     draft = ""
                 } else {
                     log(t("send_fail"))
                 }
+            } else {
+                log(t("service_off"))
             }
         }
+
         pendingPhoto?.let { photo ->
-            val cleFoto = if (target != null) manager.sharedKeyWith(target) else null
-            val fileIdFoto = if (cleFoto != null && RelayClient.isEnabled(context))
-                RelayFile.envoyer(context, cleFoto, target!!, compressPhoto(photo), "photo") else null
-            val viaRelais = fileIdFoto != null
-            val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target)
+            val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
+            val fileId = if (key != null && RelayClient.isEnabled(context)) {
+                RelayFile.envoyer(context, key, target!!, compressPhoto(photo), "photo")
+            } else null
+            val viaRelay = fileId != null
+            val sent = if (viaRelay) 1 else manager?.sendBlob(byteArrayOf(KIND_PHOTO) + compressPhoto(photo), target) ?: 0
             if (sent > 0) {
                 MeshState.addBubble(
-                    ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = initialStatus(target), msgId = manager.lastSentId)
+                    ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = initialStatus(target), msgId = manager?.lastSentId)
                 )
                 pendingPhoto = null
+            } else if (manager == null) {
+                log(t("service_off"))
             }
         }
     }
@@ -779,6 +783,26 @@ private fun MeshHome(
             log("Vocal vide, rien n'a été envoyé")
             return
         }
+        val manager = BleMeshManager.instance
+        val target = if (selectedChat == PUBLIC) null else selectedChat
+        val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
+        val fileId = if (key != null && RelayClient.isEnabled(context)) {
+            RelayFile.envoyer(context, key, target!!, bytes, "audio")
+        } else null
+        val viaRelay = fileId != null
+        val sent = if (viaRelay) 1 else manager?.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target) ?: 0
+        if (sent > 0) {
+            val sentId = fileId ?: manager?.lastSentId
+            val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
+            file.writeBytes(bytes)
+            MeshState.addBubble(
+                ChatBubble(true, "moi", t("voice_sent"), null, selectedChat, file.absolutePath, status = initialStatus(target), msgId = sentId)
+            )
+        } else if (manager == null) {
+            log(t("service_off"))
+        }
+    }
+
         val manager = BleMeshManager.instance ?: return
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val cleAudio = if (target != null) manager.sharedKeyWith(target) else null
