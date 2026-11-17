@@ -6,7 +6,7 @@ import java.security.SecureRandom
 import javax.crypto.SecretKey
 
 /**
- * Découpage et réassemblage des fichiers (photo, vocal) pour le relais Internet.
+ * Découpage et réassemblage des fichiers (photo, vocal, vidéo) pour le relais Internet.
  * Chaque morceau est chiffré avec la clé partagée. Le relais ne voit que du chiffré.
  * En-tête clair du morceau (avant chiffrement) : « CH:<fileId>|<n>|<total>|<type>|<données Base64> ».
  */
@@ -23,17 +23,25 @@ object RelayChunks {
         return octets.joinToString("") { "%02x".format(it) }
     }
 
-    /** Découpe un fichier en morceaux chiffrés, prêts à être déposés un par un. */
+    /** Nombre de morceaux nécessaires pour ce fichier. */
+    fun nombreDeMorceaux(taille: Int): Int = maxOf(1, (taille + TAILLE_MORCEAU - 1) / TAILLE_MORCEAU)
+
+    /** Fabrique un seul morceau (numéro de 1 à total), sans garder les autres en mémoire. */
+    fun morceau(donnees: ByteArray, type: String, cle: SecretKey, fileId: String, numero: Int, total: Int): Morceau {
+        val from = (numero - 1) * TAILLE_MORCEAU
+        val to = minOf(donnees.size, from + TAILLE_MORCEAU)
+        val bloc = donnees.copyOfRange(from, to)
+        val entete = "CH:$fileId|$numero|$total|$type|"
+        val clair = entete.toByteArray(Charsets.UTF_8) + Base64.encode(bloc, Base64.NO_WRAP)
+        val chiffre = CryptoEngine.encrypt(clair, cle)
+        return Morceau(fileId, numero, total, Base64.encodeToString(chiffre, Base64.NO_WRAP))
+    }
+
+    /** Découpe un fichier en morceaux chiffrés (pour les petits fichiers). */
     fun decouper(donnees: ByteArray, type: String, cle: SecretKey): List<Morceau> {
         val fileId = nouvelId()
-        val parts = donnees.toList().chunked(TAILLE_MORCEAU).map { it.toByteArray() }
-        val total = parts.size
-        return parts.mapIndexed { index, bloc ->
-            val entete = "CH:$fileId|${index + 1}|$total|$type|"
-            val clair = entete.toByteArray(Charsets.UTF_8) + Base64.encode(bloc, Base64.NO_WRAP)
-            val chiffre = CryptoEngine.encrypt(clair, cle)
-            Morceau(fileId, index + 1, total, Base64.encodeToString(chiffre, Base64.NO_WRAP))
-        }
+        val total = nombreDeMorceaux(donnees.size)
+        return (1..total).map { morceau(donnees, type, cle, fileId, it, total) }
     }
 
     /** Un morceau relevé et déchiffré. */
