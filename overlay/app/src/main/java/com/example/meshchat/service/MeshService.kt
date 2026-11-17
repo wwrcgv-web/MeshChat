@@ -18,20 +18,26 @@ import android.os.IBinder
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import com.example.meshchat.MeshState
+import com.example.meshchat.RelayPoll
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.wifi.WifiAwareDiscovery
 import com.example.meshchat.wifi.WifiAwareTransfer
 import com.example.meshchat.wifi.WifiDirectTransfer
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 
 /**
- * Service de premier plan : garde Samchat actif (Bluetooth, Wi-Fi Aware, Wi-Fi Direct, transferts, réserve)
- * même écran éteint.
+ * Service de premier plan : garde Samchat actif (Bluetooth, Wi-Fi Aware, Wi-Fi Direct, transferts,
+ * relève Internet, réserve) même écran éteint.
  */
 class MeshService : Service() {
     private var manager: BleMeshManager? = null
     private var wifi: WifiAwareDiscovery? = null
     private var transfer: WifiAwareTransfer? = null
     @Volatile private var direct: WifiDirectTransfer? = null
+
+    /** Portée des tâches de relève Internet. Annulée à l'arrêt du service. */
+    private val relayScope = CoroutineScope(SupervisorJob())
 
     private val prefs: SharedPreferences by lazy { getSharedPreferences("meshchat", Context.MODE_PRIVATE) }
     private val main = Handler(Looper.getMainLooper())
@@ -74,6 +80,14 @@ class MeshService : Service() {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        // Relève Internet : tourne tant que le service tourne, écran éteint ou non
+        RelayPoll.start(relayScope, this) { result ->
+            when (result) {
+                is RelayPoll.RelayResult.Text -> MeshState.addRelayReceived(result.senderId, result.text)
+                is RelayPoll.RelayResult.File -> MeshState.addRelayFile(result.senderId, result.type, result.data)
+                is RelayPoll.RelayResult.Ack -> MeshState.confirmerRelais(result.msgId)
+            }
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -224,6 +238,8 @@ class MeshService : Service() {
 
     override fun onDestroy() {
         instance = null
+        RelayPoll.stop()
+        relayScope.cancel()
         main.removeCallbacksAndMessages(null)
         try { unregisterReceiver(bluetoothWatcher) } catch (e: Exception) { }
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
