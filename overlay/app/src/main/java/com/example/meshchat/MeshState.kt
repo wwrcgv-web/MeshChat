@@ -15,6 +15,8 @@ import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -42,7 +44,8 @@ data class ChatBubble(
     val time: String = timeNow(),
     val status: String? = null,
     val msgId: String? = null,
-    val imagePath: String? = null
+    val imagePath: String? = null,
+    val video: String? = null
 )
 
 /** Ordre d'avancement d'un statut : un message ne revient jamais à un statut moins avancé. */
@@ -145,7 +148,6 @@ private object LivePlayer {
         }
     }
 }
-
 /**
  * Mémoire de l'application : journal, conversations, pairs, contacts.
  * Elle vit tant que le service tourne. Les conversations sont aussi sauvegardées sur le téléphone,
@@ -158,6 +160,10 @@ object MeshState {
     private const val MAX_JOURNAL = 200
     private const val MAX_BUBBLES = 500
     private const val MAX_STATUSES = 1000
+    /** Taille maximale d'une photo ou d'un vocal reçu par Internet : 10 Mo. */
+    private const val MAX_SMALL_FILE_BYTES = 10 * 1024 * 1024
+    /** Côté maximal d'une photo décodée en mémoire. */
+    private const val MAX_PHOTO_SIDE = 2048
     /** Délai sans morceau de voix au-delà duquel une nouvelle prise de parole est annoncée dans le journal. */
     private const val LIVE_GAP_MS = 3_000L
     private const val CHANNEL_MESSAGES = "meshchat_messages"
@@ -194,6 +200,9 @@ object MeshState {
 
     /** Sauvegarde de l'historique, faite en arrière-plan pour ne pas bloquer l'écran. */
     private val saver = Executors.newSingleThreadExecutor()
+    /** Écriture des gros fichiers (vidéos), séparée de la sauvegarde de l'historique. */
+    private val io = Executors.newSingleThreadExecutor()
+    private val ui = Handler(Looper.getMainLooper())
     private var historyFile: File? = null
     private var mediaDir: File? = null
     private var historyLoaded = false
@@ -235,6 +244,7 @@ object MeshState {
                     BitmapFactory.decodeFile(it, BitmapFactory.Options().apply { inSampleSize = 2 })
                 }
                 val audio = o.optString("audio").takeIf { it.isNotEmpty() && File(it).exists() }
+                val video = o.optString("video").takeIf { it.isNotEmpty() && File(it).exists() }
                 loaded.add(
                     ChatBubble(
                         mine = o.optBoolean("mine"),
@@ -246,7 +256,8 @@ object MeshState {
                         time = o.optString("time", timeNow()),
                         status = o.optString("status").takeIf { it.isNotEmpty() },
                         msgId = o.optString("msgId").takeIf { it.isNotEmpty() },
-                        imagePath = imagePath
+                        imagePath = imagePath,
+                        video = video
                     )
                 )
             }
@@ -272,6 +283,7 @@ object MeshState {
                     put("msgId", b.msgId ?: "")
                     put("audio", b.audio ?: "")
                     put("imagePath", b.imagePath ?: "")
+                    put("video", b.video ?: "")
                 }
             )
         }
@@ -287,8 +299,8 @@ object MeshState {
         }
     }
 
-    /** Copie un vocal dans le stockage permanent de l'app, pour qu'Android ne le supprime pas avec le cache. */
-    private fun keepAudio(path: String?): String? {
+    /** Copie un fichier dans le stockage permanent de l'app, pour qu'Android ne le supprime pas avec le cache. */
+    private fun keepFile(path: String?): String? {
         if (path == null) return null
         val dir = mediaDir ?: return path
         val src = File(path)
@@ -316,22 +328,25 @@ object MeshState {
         }
     }
 
-    /** Retire le message le plus ancien, et supprime sa photo et son vocal du téléphone. */
+    /** Supprime du téléphone les fichiers d'un message (photo, vocal, vidéo). */
+    private fun deleteFiles(b: ChatBubble) {
+        b.audio?.let { File(it).delete() }
+        b.imagePath?.let { File(it).delete() }
+        b.video?.let { File(it).delete() }
+    }
+
+    /** Retire le message le plus ancien, et supprime ses fichiers du téléphone. */
     private fun removeOldest() {
-        val old = bubbles.removeAt(0)
-        old.audio?.let { File(it).delete() }
-        old.imagePath?.let { File(it).delete() }
+        deleteFiles(bubbles.removeAt(0))
     }
 
     /** Supprime un message (appui long) : de l'écran, du téléphone et de l'historique sauvegardé. */
     fun deleteBubble(b: ChatBubble) {
         bubbles.remove(b)
-        b.audio?.let { File(it).delete() }
-        b.imagePath?.let { File(it).delete() }
+        deleteFiles(b)
         saveHistory()
     }
-
-    /** Suit les écrans ouverts, pour savoir si l'app est à l'écran. Enregistré une seule fois. */
+        /** Suit les écrans ouverts, pour savoir si l'app est à l'écran. Enregistré une seule fois. */
     private fun registerVisibilityTracking(app: Context) {
         if (callbacksRegistered) return
         val application = app as? Application ?: return
@@ -371,22 +386,78 @@ object MeshState {
         notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", texte)
     }
 
+    /** Décode une photo sans jamais dépasser une taille raisonnable en mémoire. */
+    private fun decodePhoto(data: ByteArray): Bitmap? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (bounds.outWidth / sample > MAX_PHOTO_SIDE || bounds.outHeight / sample > MAX_PHOTO_SIDE) sample *= 2
+            BitmapFactory.decodeByteArray(data, 0, data.size, BitmapFactory.Options().apply { inSampleSize = sample })
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     /**
-     * Photo ou vocal complet reçu par le relais Internet. Même affichage que le Bluetooth,
-     * avec le statut « 🌐 Reçu ».
+     * Photo, vocal ou vidéo complet reçu par le relais Internet. Même affichage que le Bluetooth,
+     * avec le statut « 🌐 Reçu ». Les fichiers trop gros ou d'un type inconnu sont refusés.
      */
     fun addRelayFile(expediteurId: String, type: String, donnees: ByteArray) {
         val context = appContext ?: return
-        if (type == "photo") {
-            BitmapFactory.decodeByteArray(donnees, 0, donnees.size)?.let { photo ->
+        val limite = if (type == "video") RelayFile.MAX_VIDEO_BYTES else MAX_SMALL_FILE_BYTES
+        if (donnees.isEmpty() || donnees.size > limite) {
+            addJournal("Fichier reçu refusé (taille)")
+            return
+        }
+        val titre = "@${nameOf(expediteurId)}"
+        when (type) {
+            "photo" -> {
+                val photo = decodePhoto(donnees)
+                if (photo == null) {
+                    addJournal("Photo reçue illisible")
+                    return
+                }
                 addBubble(ChatBubble(false, expediteurId, "Photo reçue", photo, expediteurId, status = "🌐 Reçu"))
-                notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", "Photo reçue")
+                notifyMessage("p$expediteurId", titre, "Photo reçue")
             }
-        } else if (type == "audio") {
-            val file = File(context.cacheDir, "vocal_relais_${System.currentTimeMillis()}.m4a")
-            file.writeBytes(donnees)
-            addBubble(ChatBubble(false, expediteurId, "Vocal reçu", null, expediteurId, file.absolutePath, status = "🌐 Reçu"))
-            notifyMessage("p$expediteurId", "@${nameOf(expediteurId)}", "Vocal reçu")
+            "audio" -> {
+                val file = File(context.cacheDir, "vocal_relais_${System.currentTimeMillis()}.m4a")
+                try {
+                    file.writeBytes(donnees)
+                } catch (e: Exception) {
+                    addJournal("Vocal reçu non enregistré")
+                    return
+                }
+                addBubble(ChatBubble(false, expediteurId, "Vocal reçu", null, expediteurId, file.absolutePath, status = "🌐 Reçu"))
+                notifyMessage("p$expediteurId", titre, "Vocal reçu")
+            }
+            "video" -> {
+                val dir = mediaDir ?: File(context.filesDir, MEDIA_DIR).apply { mkdirs() }
+                val file = File(dir, "video_${System.currentTimeMillis()}.mp4")
+                io.execute {
+                    val written = try {
+                        file.writeBytes(donnees)
+                        true
+                    } catch (e: Exception) {
+                        file.delete()
+                        false
+                    }
+                    ui.post {
+                        if (written) {
+                            addBubble(ChatBubble(false, expediteurId, "Vidéo reçue", null, expediteurId, status = "🌐 Reçu", video = file.absolutePath))
+                            notifyMessage("p$expediteurId", titre, "Vidéo reçue")
+                        } else {
+                            addJournal("Vidéo reçue non enregistrée")
+                        }
+                    }
+                }
+            }
+            else -> {
+                addJournal("Type de fichier inconnu")
+                return
+            }
         }
         count("in_file")
     }
@@ -406,8 +477,9 @@ object MeshState {
         val known = b.msgId?.let { statusById[it] }
         val withStatus = if (known != null && rank(known) > rank(b.status)) b.copy(status = known) else b
         val shown = withStatus.copy(
-            audio = keepAudio(withStatus.audio),
-            imagePath = keepImage(withStatus.image, withStatus.imagePath)
+            audio = keepFile(withStatus.audio),
+            imagePath = keepImage(withStatus.image, withStatus.imagePath),
+            video = keepFile(withStatus.video)
         )
         bubbles.add(shown)
         if (bubbles.size > MAX_BUBBLES) removeOldest()
@@ -436,7 +508,7 @@ object MeshState {
 
     /**
      * Affiche une notification de message, seulement si Samchat n'est pas à l'écran.
-     * Une notification par conversation : les messages suivants la mettent à jour.
+     * Une notification par conversation. Le contenu est masqué sur l'écran verrouillé.
      */
     private fun notifyMessage(key: String, title: String, text: String) {
         if (startedActivities > 0) return
@@ -467,6 +539,7 @@ object MeshState {
             .setContentText(text.take(MAX_NOTIF_TEXT))
             .setContentIntent(pending)
             .setAutoCancel(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
             .build()
         try {
             manager.notify(id, notification)
@@ -554,7 +627,7 @@ object MeshState {
         LivePlayer.offer(file)
     }
 
-    /** Photo ou vocal complet reçu. Le premier octet indique le type. */
+    /** Photo ou vocal complet reçu par Bluetooth. Le premier octet indique le type. */
     private fun onBlob(bytes: ByteArray, from: String?) {
         val context = appContext ?: return
         if (bytes.isNotEmpty() && bytes[0] == KIND_AUDIO) {
@@ -563,7 +636,7 @@ object MeshState {
             addBubble(ChatBubble(false, from ?: "vocal", "Vocal reçu", null, from ?: PUBLIC, file.absolutePath))
             notifyBlob(from, "Vocal reçu")
         } else if (bytes.isNotEmpty() && bytes[0] == KIND_PHOTO) {
-            BitmapFactory.decodeByteArray(bytes, 1, bytes.size - 1)?.let { photo ->
+            decodePhoto(bytes.copyOfRange(1, bytes.size))?.let { photo ->
                 if (from == null) {
                     addBubble(ChatBubble(false, "photo", "Photo reçue", photo, PUBLIC))
                 } else {
