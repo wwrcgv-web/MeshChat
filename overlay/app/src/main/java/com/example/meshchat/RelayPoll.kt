@@ -1,5 +1,6 @@
 package com.example.meshchat
 
+import javax.crypto.SecretKey
 import android.content.Context
 import android.util.Base64
 import com.example.meshchat.crypto.CryptoEngine
