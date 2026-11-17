@@ -803,23 +803,6 @@ private fun MeshHome(
         }
     }
 
-        val manager = BleMeshManager.instance ?: return
-        val target = if (selectedChat == PUBLIC) null else selectedChat
-        val cleAudio = if (target != null) manager.sharedKeyWith(target) else null
-        val fileIdAudio = if (cleAudio != null && RelayClient.isEnabled(context))
-            RelayFile.envoyer(context, cleAudio, target!!, bytes, "audio") else null
-        val viaRelais = fileIdAudio != null
-        val sent = if (viaRelais) 1 else manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
-        if (sent > 0) {
-            val sentId = fileIdAudio ?: manager.lastSentId
-            val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
-            file.writeBytes(bytes)
-            MeshState.addBubble(
-                ChatBubble(true, "moi", t("voice_sent"), null, selectedChat, file.absolutePath, status = initialStatus(target), msgId = sentId)
-            )
-        }
-    }
-
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) {
             log("Micro refusé dans les réglages du téléphone")
