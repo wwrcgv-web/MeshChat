@@ -2,10 +2,8 @@ package com.example.meshchat
 
 import android.content.Context
 import android.util.Base64
-import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.crypto.CryptoEngine
 import kotlinx.coroutines.*
-import javax.crypto.SecretKey
 
 object RelayPoll {
 
@@ -44,8 +42,8 @@ object RelayPoll {
     suspend fun pollOnce(context: Context, onResult: (RelayResult) -> Unit) {
         withContext(Dispatchers.IO) {
             if (!RelayClient.isEnabled(context)) return@withContext
-            val manager = BleMeshManager.instance ?: return@withContext
-            val myHash = RelayDispatch.hacherDestinataire(manager.myIdHex)
+            val myId = LocalIdentity.myIdHex(context)
+            val myHash = RelayDispatch.hacherDestinataire(myId)
             val messages = RelayClient.relever(context, myHash)
             for (content in messages) {
                 val encrypted = try {
@@ -54,8 +52,8 @@ object RelayPoll {
                     continue
                 }
                 var decrypted = false
-                for (contact in manager.knownContacts()) {
-                    val key = manager.sharedKeyWith(contact.id) ?: continue
+                for (contact in LocalIdentity.knownContacts(context)) {
+                    val key = LocalIdentity.sharedKeyWith(context, contact.id) ?: continue
                     val clear = CryptoEngine.decrypt(encrypted, key) ?: continue
                     decrypted = true
                     processClear(context, contact.id, clear, key, onResult)
