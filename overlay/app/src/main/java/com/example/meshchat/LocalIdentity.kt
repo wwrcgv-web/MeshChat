@@ -1,5 +1,6 @@
 package com.example.meshchat
 
+import com.example.meshchat.ble.MeshPacket
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.meshchat.crypto.CryptoEngine
