@@ -247,17 +247,15 @@ class MainActivity : ComponentActivity() {
         Lang.load(this)
         val manager = BleMeshManager.instance
         if (manager != null) {
-            AppState.serviceOn = true
-            manager.openChatPeer = AppState.openChat
-            AppState.openChat?.let { manager.markRead(it) }
-        }
-        // Relève les messages du relais toutes les 5 secondes quand l'app est visible
+                    // Relève les messages du relais toutes les 5 secondes quand l'app est visible
         RelayPoll.start(lifecycleScope, this) { result ->
             when (result) {
-                is RelayPoll.RelayResult.Text -> MeshState.addRelayReceived(result.expediteurId, result.texte)
-                is RelayPoll.RelayResult.File -> MeshState.addRelayFile(result.expediteurId, result.type, result.donnees)
+                is RelayPoll.RelayResult.Text -> MeshState.addRelayReceived(result.senderId, result.text)
+                is RelayPoll.RelayResult.File -> MeshState.addRelayFile(result.senderId, result.type, result.data)
                 is RelayPoll.RelayResult.Ack -> MeshState.confirmerRelais(result.msgId)
             }
+        }
+
         }
     }
 
