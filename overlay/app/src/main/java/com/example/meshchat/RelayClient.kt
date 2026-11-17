@@ -7,41 +7,27 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 
-/**
- * Client du relais Internet (Cloudflare Worker + Supabase).
- * Ne fait que déposer et relire des messages déjà chiffrés.
- * Désactivé par défaut : il ne sert que si l'utilisateur a activé « Internet » dans les Réglages.
- */
 object RelayClient {
     const val BASE_URL = "https://samchat-relais.wwrcgv.workers.dev"
-    private const val PREF_INTERNET = "internet_on"
     private const val TIMEOUT_MS = 10_000
 
-    fun isEnabled(context: Context): Boolean =
-        context.getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean(PREF_INTERNET, false)
+    /** Internet est toujours actif : plus d'interrupteur pour l'utilisateur. */
+    @Suppress("UNUSED_PARAMETER")
+    fun isEnabled(context: Context): Boolean = true
 
+    @Suppress("UNUSED_PARAMETER")
     fun setEnabled(context: Context, on: Boolean) {
-        context.getSharedPreferences("meshchat", Context.MODE_PRIVATE).edit().putBoolean(PREF_INTERNET, on).apply()
     }
 
-    /**
-     * Ancienne saisie du jeton dans les Réglages : sans effet, le jeton est maintenant intégré à l'application.
-     * Gardée seulement pour que l'écran des Réglages compile encore.
-     */
     @Suppress("UNUSED_PARAMETER")
     fun saveToken(context: Context, token: String) {
     }
 
-    /** Jeton intégré à l'application au moment de la compilation (secret GitHub RELAY_TOKEN). */
     @Suppress("UNUSED_PARAMETER")
     private fun token(context: Context): String = BuildConfig.RELAY_TOKEN
 
-    /**
-     * Dépose un message chiffré pour un destinataire (identifiant haché).
-     * Retourne true si le relais a accepté le message.
-     */
     fun deposer(context: Context, destinataireHache: String, contenuChiffre: String): Boolean {
-        if (!isEnabled(context) || token(context).isEmpty()) return false
+        if (token(context).isEmpty()) return false
         val corps = JSONObject()
             .put("destinataire", destinataireHache)
             .put("contenu_chiffre", contenuChiffre)
@@ -50,12 +36,8 @@ object RelayClient {
         return code == 201
     }
 
-    /**
-     * Relit les messages chiffrés déposés pour ce destinataire.
-     * Le relais les supprime après lecture. Retourne une liste de contenus chiffrés.
-     */
     fun relever(context: Context, destinataireHache: String): List<String> {
-        if (!isEnabled(context) || token(context).isEmpty()) return emptyList()
+        if (token(context).isEmpty()) return emptyList()
         val query = "?destinataire=" + URLEncoder.encode(destinataireHache, "UTF-8")
         val reponse = lireReponse(context, "GET", "/relever$query", null) ?: return emptyList()
         return try {
