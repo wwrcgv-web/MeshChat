@@ -1,5 +1,6 @@
 package com.example.meshchat.ble
 
+import com.example.meshchat.LocalIdentity
 import android.annotation.SuppressLint
 import android.bluetooth.*
 import android.bluetooth.le.*
@@ -201,7 +202,7 @@ class BleMeshManager(private val context: Context) {
     val myId: ByteArray = loadOrCreateId()
 
     /** Mon identifiant en hexadécimal. */
-    val myIdHex: String get() = myId.toHex()
+        private val keyPair: KeyPair = LocalIdentity.myKeyPair(context)
 
     private val keyPair: KeyPair = loadOrCreateKeyPair()
 
@@ -235,27 +236,6 @@ class BleMeshManager(private val context: Context) {
         }
         val fresh = MeshPacket.newPeerId()
         prefs.edit().putString("my_id", fresh.toHex()).apply()
-        return fresh
-    }
-
-    private fun loadOrCreateKeyPair(): KeyPair {
-        val pubHex = prefs.getString("my_pub", null)
-        val privHex = prefs.getString("my_priv", null)
-        if (pubHex != null && privHex != null) {
-            try {
-                val factory = KeyFactory.getInstance("EC")
-                val pub = factory.generatePublic(X509EncodedKeySpec(pubHex.hexToBytes()))
-                val priv = factory.generatePrivate(PKCS8EncodedKeySpec(privHex.hexToBytes()))
-                return KeyPair(pub, priv)
-            } catch (e: Exception) {
-                Log.w(TAG, "Clés illisibles, nouvelle paire créée", e)
-            }
-        }
-        val fresh = CryptoEngine.newKeyPair()
-        prefs.edit()
-            .putString("my_pub", fresh.public.encoded.toHex())
-            .putString("my_priv", fresh.private.encoded.toHex())
-            .apply()
         return fresh
     }
 
