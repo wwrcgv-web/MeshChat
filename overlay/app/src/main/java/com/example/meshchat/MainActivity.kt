@@ -702,21 +702,30 @@ private fun MeshHome(
     }
 
         fun send() {
-        val manager = BleMeshManager.instance
+                val manager = BleMeshManager.instance
         val target = if (selectedChat == PUBLIC) null else selectedChat
 
         if (draft.isNotBlank()) {
             val text = draft
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
-            val relayId = if (target != null && key != null && RelayClient.isEnabled(context)) {
-                RelayDispatch.envoyerParRelais(context, key, target, text)
-            } else null
 
-            if (relayId != null) {
-                MeshState.addBubble(
-                    ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
-                )
+            if (target != null && key != null && RelayClient.isEnabled(context)) {
+                // Envoi par Internet : la requête part dans un autre fil, l'écran reste fluide
                 draft = ""
+                Thread {
+                    val relayId = RelayDispatch.envoyerParRelais(context, key, target, text)
+                    Handler(Looper.getMainLooper()).post {
+                        if (relayId != null) {
+                            MeshState.addBubble(
+                                ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
+                            )
+                        } else {
+                            // Échec : le texte revient dans la zone de saisie, rien n'est perdu
+                            if (draft.isEmpty()) draft = text
+                            log(t("send_fail"))
+                        }
+                    }
+                }.start()
             } else if (manager != null) {
                 val sent = manager.sendMessage(text, target)
                 if (sent > 0) {
