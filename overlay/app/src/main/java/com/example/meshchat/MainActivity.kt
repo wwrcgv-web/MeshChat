@@ -789,7 +789,7 @@ private fun MeshHome(
         }
     }
 
-    fun stopAndSendVoice() {
+        fun stopAndSendVoice() {
         recording = false
         val bytes: ByteArray? = recorder.stop()
         if (bytes == null || bytes.isEmpty()) {
@@ -799,22 +799,38 @@ private fun MeshHome(
         val manager = BleMeshManager.instance
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
-        val fileId = if (key != null && RelayClient.isEnabled(context)) {
-            RelayFile.envoyer(context, key, target!!, bytes, "audio")
-        } else null
-        val viaRelay = fileId != null
-        val sent = if (viaRelay) 1 else manager?.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target) ?: 0
-        if (sent > 0) {
-            val sentId = fileId ?: manager?.lastSentId
-            val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
-            file.writeBytes(bytes)
-            MeshState.addBubble(
-                ChatBubble(true, "moi", t("voice_sent"), null, selectedChat, file.absolutePath, status = initialStatus(target), msgId = sentId)
-            )
-        } else if (manager == null) {
+
+        if (target != null && key != null && RelayClient.isEnabled(context)) {
+            // Envoi par Internet : hors du fil principal, l'écran reste fluide
+            Thread {
+                val fileId = RelayFile.envoyer(context, key, target, bytes, "audio")
+                Handler(Looper.getMainLooper()).post {
+                    if (fileId != null) {
+                        val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
+                        file.writeBytes(bytes)
+                        MeshState.addBubble(
+                            ChatBubble(true, "moi", t("voice_sent"), null, selectedChat, file.absolutePath, status = "🌐 ${t("sent")}", msgId = fileId)
+                        )
+                    } else {
+                        log(t("send_fail"))
+                    }
+                }
+            }.start()
+        } else if (manager != null) {
+            val sent = manager.sendBlob(byteArrayOf(KIND_AUDIO) + bytes, target)
+            if (sent > 0) {
+                val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
+                file.writeBytes(bytes)
+                MeshState.addBubble(
+                    ChatBubble(true, "moi", t("voice_sent"), null, selectedChat, file.absolutePath, status = initialStatus(target), msgId = manager.lastSentId)
+                )
+            } else {
+                log(t("send_fail"))
+            }
+        } else {
             log(t("service_off"))
         }
-    }
+        }
 
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) {
