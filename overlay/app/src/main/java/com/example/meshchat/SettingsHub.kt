@@ -32,7 +32,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.meshchat.ble.BleMeshManager
@@ -111,12 +110,7 @@ private val TEXTS: Map<String, List<String>> = mapOf(
     "live" to listOf("Parole en direct", "Live talk", "Habla en directo", "Fala em direto", "التحدث المباشر", "实时语音"),
     "live_note" to listOf("Maintenir le micro pour parler. Un appui bref envoie un vocal.", "Hold the mic to talk. A short tap sends a voice note.", "Mantén el micrófono para hablar. Un toque breve envía una nota de voz.", "Mantenha o microfone para falar. Um toque breve envia uma nota de voz.", "اضغط مطولاً على الميكروفون للتحدث. النقرة القصيرة ترسل رسالة صوتية.", "按住麦克风说话。短按发送语音消息。"),
     "internet" to listOf("Internet (relais)", "Internet (relay)", "Internet (relevo)", "Internet (retransmissão)", "الإنترنت (الترحيل)", "互联网（中继）"),
-    "internet_note" to listOf("Désactivé par défaut. Utilise les données mobiles.", "Off by default. Uses mobile data.", "Desactivado por defecto. Usa datos móviles.", "Desativado por defeito. Usa dados móveis.", "معطّل افتراضياً. يستخدم بيانات الهاتف.", "默认关闭。会使用移动数据。"),
-    "token" to listOf("Jeton d'accès", "Access token", "Token de acceso", "Token de acesso", "رمز الوصول", "访问令牌"),
-    "token_note" to listOf("Saisi une fois, jamais affiché ensuite.", "Entered once, never shown again.", "Se introduce una vez, no se vuelve a mostrar.", "Introduzido uma vez, não volta a ser mostrado.", "يُدخل مرة واحدة ولا يُعرض لاحقاً.", "只需输入一次，之后不再显示。"),
-    "token_save" to listOf("Enregistrer le jeton", "Save token", "Guardar token", "Guardar token", "حفظ الرمز", "保存令牌"),
-    "token_saved" to listOf("Jeton enregistré", "Token saved", "Token guardado", "Token guardado", "تم حفظ الرمز", "令牌已保存"),
-    "token_clear" to listOf("Effacer le jeton", "Clear token", "Borrar token", "Apagar token", "مسح الرمز", "清除令牌")
+    "internet_note" to listOf("Désactivé par défaut. Utilise les données mobiles.", "Off by default. Uses mobile data.", "Desactivado por defecto. Usa datos móviles.", "Desativado por defeito. Usa dados móveis.", "معطّل افتراضياً. يستخدم بيانات الهاتف.", "默认关闭。会使用移动数据。")
 )
 
 private fun langIndex(lang: String): Int = when (lang) {
@@ -345,8 +339,6 @@ fun SettingsHub(
     var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
     var liveOn by remember { mutableStateOf(AppState.liveOn) }
     var internetOn by remember { mutableStateOf(RelayClient.isEnabled(context)) }
-    var tokenInput by remember { mutableStateOf("") }
-    var tokenSaved by remember { mutableStateOf(prefs.getString("relay_token", "")?.isNotEmpty() == true) }
     val awareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
     val longSupported = remember {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
@@ -554,33 +546,6 @@ fun SettingsHub(
                         HubSwitch(tr(lang, "internet"), tr(lang, "internet_note"), internetOn) { on ->
                             internetOn = on
                             RelayClient.setEnabled(context, on)
-                        }
-                        HubLabel(tr(lang, "token"))
-                        Text(tr(lang, "token_note"), color = SamchatColors.Grey, fontSize = 13.sp)
-                        Spacer(Modifier.height(8.dp))
-                        TextField(
-                            value = tokenInput,
-                            onValueChange = { tokenInput = it },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = hubFieldColors(),
-                            textStyle = TextStyle(fontSize = 16.sp),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        HubButton(tr(lang, "token_save"), enabled = tokenInput.length >= 16) {
-                            RelayClient.saveToken(context, tokenInput)
-                            tokenInput = ""
-                            tokenSaved = true
-                        }
-                        if (tokenSaved) {
-                            Text(tr(lang, "token_saved"), color = SamchatColors.Green, fontSize = 14.sp, modifier = Modifier.padding(top = 6.dp))
-                            Spacer(Modifier.height(8.dp))
-                            HubButton(tr(lang, "token_clear"), selected = false) {
-                                RelayClient.saveToken(context, "")
-                                tokenSaved = false
-                            }
                         }
                     }
                 }
