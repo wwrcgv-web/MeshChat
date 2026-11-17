@@ -701,8 +701,8 @@ private fun MeshHome(
         if (visible.isNotEmpty()) chatState.animateScrollToItem(visible.size - 1)
     }
 
-        fun send() {
-                val manager = BleMeshManager.instance
+            fun send() {
+        val manager = BleMeshManager.instance
         val target = if (selectedChat == PUBLIC) null else selectedChat
 
         if (draft.isNotBlank()) {
@@ -741,7 +741,7 @@ private fun MeshHome(
             }
         }
 
-               pendingPhoto?.let { photo ->
+        pendingPhoto?.let { photo ->
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
             if (target != null && key != null && RelayClient.isEnabled(context)) {
                 // Envoi par Internet : compression et dépôt dans un autre fil, l'écran reste fluide
@@ -773,7 +773,8 @@ private fun MeshHome(
             } else {
                 log(t("service_off"))
             }
-               } 
+        }
+            }
 
     fun startVoice() {
         if (BleMeshManager.instance == null) {
