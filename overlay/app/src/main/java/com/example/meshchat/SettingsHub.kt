@@ -334,4 +334,209 @@ fun SettingsHub(
     var scanSend by remember { mutableStateOf(prefs.getBoolean(BleMeshManager.PREF_SCAN_SEND, true)) }
     var radioAware by remember { mutableStateOf(prefs.getBoolean("radio_wifi_aware", true)) }
     var radioDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
-    var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range",
+        var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
+    var liveOn by remember { mutableStateOf(AppState.liveOn) }
+    val awareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
+    val longSupported = remember {
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
+    }
+
+    BackHandler(enabled = page != 0) { page = 0 }
+
+    val pageTitle = when (page) {
+        1 -> tr(lang, "profile")
+        2 -> tr(lang, "appearance")
+        3 -> tr(lang, "connection")
+        4 -> tr(lang, "relay")
+        5 -> tr(lang, "contacts")
+        6 -> tr(lang, "share")
+        7 -> tr(lang, "privacy")
+        8 -> tr(lang, "diag")
+        else -> tr(lang, "settings")
+    }
+
+    Surface(modifier = Modifier.fillMaxSize(), color = SamchatColors.Background) {
+        Column(Modifier.fillMaxSize()) {
+            PageTitle(pageTitle) { if (page == 0) onBack() else page = 0 }
+
+            Column(
+                Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp).padding(bottom = 24.dp)
+            ) {
+                when (page) {
+                    0 -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { page = 1 }.padding(horizontal = 4.dp, vertical = 12.dp)
+                        ) {
+                            BigAvatar(myAvatar, myName.take(1).uppercase().ifEmpty { "?" }, 64)
+                            Spacer(Modifier.width(16.dp))
+                            Column {
+                                Text(myName.ifBlank { "Ton nom" }, color = SamchatColors.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    ProfileStore.myStatus(context).ifBlank { tr(lang, "profile_hint").substringBefore(",") },
+                                    color = SamchatColors.Grey,
+                                    fontSize = 14.sp
+                                )
+                            }
+                        }
+                        NavRow(0, tr(lang, "profile"), tr(lang, "profile_hint")) { page = 1 }
+                        NavRow(1, tr(lang, "appearance"), tr(lang, "appearance_hint")) { page = 2 }
+                        NavRow(2, tr(lang, "connection"), tr(lang, "connection_hint")) { page = 3 }
+                        NavRow(3, tr(lang, "relay"), tr(lang, "relay_hint")) { page = 4 }
+                        NavRow(4, tr(lang, "contacts"), tr(lang, "contacts_hint")) { page = 5 }
+                        NavRow(5, tr(lang, "share"), tr(lang, "share_hint")) { page = 6 }
+                        NavRow(6, tr(lang, "privacy"), tr(lang, "privacy_hint")) { page = 7 }
+                        NavRow(7, tr(lang, "diag"), tr(lang, "diag_hint")) { page = 8 }
+                    }
+
+                    1 -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            BigAvatar(myAvatar, myName.take(1).uppercase().ifEmpty { "?" }, 72)
+                            Spacer(Modifier.width(14.dp))
+                            Column(Modifier.weight(1f)) { HubButton(tr(lang, "photo"), onClick = onChangePhoto) }
+                        }
+                        HubLabel(tr(lang, "name"))
+                        TextField(
+                            value = nameInput,
+                            onValueChange = { nameInput = it.take(20) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = hubFieldColors(),
+                            textStyle = TextStyle(fontSize = 16.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "save_name"), enabled = nameInput.isNotBlank()) { onSaveName(nameInput) }
+                        HubLabel(tr(lang, "id"))
+                        Text(BleMeshManager.instance?.myIdHex?.take(16) ?: "—", color = SamchatColors.White, fontSize = 14.sp, fontFamily = FontFamily.Monospace)
+                        HubLabel(tr(lang, "status"))
+                        TextField(
+                            value = statusInput,
+                            onValueChange = { statusInput = it.take(ProfileStore.STATUS_MAX_CHARS) },
+                            singleLine = true,
+                            shape = RoundedCornerShape(14.dp),
+                            colors = hubFieldColors(),
+                            textStyle = TextStyle(fontSize = 16.sp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "save_status")) { onSaveStatus(statusInput) }
+                    }
+
+                    2 -> {
+                        listOf("système" to "Automatique", "clair" to "Clair", "sombre" to "Sombre").forEach { (key, label) ->
+                            HubButton(label, selected = theme == key) { onTheme(key) }
+                            Spacer(Modifier.height(10.dp))
+                        }
+                    }
+
+                    3 -> {
+                        HubSwitch(tr(lang, "bg"), tr(lang, "bg_note"), runBg) {
+                            runBg = it; AppState.runInBackground = it
+                        }
+                        HubSwitch(tr(lang, "ble"), tr(lang, "ble_note"), radioBle) { on ->
+                            radioBle = on; prefs.edit().putBoolean("radio_ble", on).apply()
+                            BleMeshManager.instance?.setBleEnabled(on)
+                        }
+                        HubSwitch(tr(lang, "scan_send"), tr(lang, "scan_send_note"), scanSend) { on ->
+                            scanSend = on; prefs.edit().putBoolean(BleMeshManager.PREF_SCAN_SEND, on).apply()
+                        }
+                        HubSwitch("Wi-Fi Aware", if (awareSupported) "Gros fichiers entre voisins." else "Non supporté.", radioAware, awareSupported) { on ->
+                            radioAware = on; prefs.edit().putBoolean("radio_wifi_aware", on).apply()
+                            MeshService.instance?.setWifiAwareEnabled(on)
+                        }
+                        HubSwitch("Wi-Fi Direct", "Gros fichiers privés.", radioDirect) { on ->
+                            radioDirect = on; prefs.edit().putBoolean("radio_wifi_direct", on).apply()
+                            MeshService.instance?.setWifiDirectEnabled(on)
+                        }
+                        HubSwitch("Bluetooth longue portée", if (longSupported) "Plus loin, mais plus lent." else "Non supporté.", radioLong, longSupported) { on ->
+                            radioLong = on; prefs.edit().putBoolean("radio_long_range", on).apply()
+                        }
+                        HubSwitch(tr(lang, "live"), tr(lang, "live_note"), liveOn) { on ->
+                            liveOn = on; AppState.liveOn = on; prefs.edit().putBoolean("live_on", on).apply()
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        AccountSection(context)
+                    }
+
+                    4 -> {
+                        RelaySettings(context, SamchatColors.Green, SamchatColors.Grey, SamchatColors.White)
+                    }
+
+                    5 -> {
+                        HubButton(tr(lang, "myqr"), onClick = onShowQr)
+                        Spacer(Modifier.height(10.dp))
+                        HubButton(tr(lang, "scan"), onClick = onScan)
+                        HubLabel("${tr(lang, "contacts").uppercase()} (${contacts.size})")
+                        if (contacts.isEmpty()) {
+                            Text("—", color = SamchatColors.Grey, fontSize = 15.sp)
+                        } else {
+                            contacts.forEach { c ->
+                                val online = peers.any { it.id == c.id }
+                                Text(
+                                    "@${MeshState.nameOf(c.id)}  ${if (online) "●" else "○"}",
+                                    color = if (online) SamchatColors.Green else SamchatColors.Grey,
+                                    fontSize = 16.sp,
+                                    modifier = Modifier.padding(vertical = 6.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    6 -> {
+                        HubButton(tr(lang, "share_btn"), onClick = onShare)
+                    }
+
+                    7 -> {
+                        NoteConfidentialite()
+
+                        HubLabel(tr(lang, "update"))
+                        Text("Samchat, version $version", color = SamchatColors.White, fontSize = 15.sp)
+                        Text(tr(lang, "update_note"), color = SamchatColors.Grey, fontSize = 13.sp)
+                        Spacer(Modifier.height(8.dp))
+                        HubButton(tr(lang, "update_btn")) {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(RELEASES_URL)))
+                        }
+
+                        HubLabel(tr(lang, "lang"))
+                        LANGUAGES.chunked(2).forEach { pair ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                pair.forEach { (code, name) ->
+                                    val selected = lang == code
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .heightIn(min = 52.dp)
+                                            .clip(RoundedCornerShape(14.dp))
+                                            .background(if (selected) SamchatColors.GreenSoft else SamchatColors.Field)
+                                            .clickable {
+                                                lang = code
+                                                prefs.edit().putString("app_lang", code).apply()
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(name, color = SamchatColors.White, fontSize = 16.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+                                    }
+                                }
+                                if (pair.size == 1) Spacer(Modifier.weight(1f))
+                            }
+                            Spacer(Modifier.height(8.dp))
+                        }
+                        Text(tr(lang, "lang_note"), color = SamchatColors.Grey, fontSize = 13.sp)
+
+                        HubLabel(tr(lang, "help_head"))
+                        Text(tr(lang, "help_body"), color = SamchatColors.White, fontSize = 15.sp)
+                    }
+
+                    8 -> {
+                        Text("${tr(lang, "inst")} : $installer", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Text("${tr(lang, "peers")} : ${peers.size}", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
+                        Spacer(Modifier.height(12.dp))
+                        HubButton(tr(lang, "debug_btn"), selected = false, onClick = onDebug)
+                    }
+                }
+            }
+        }
+    }
+}
