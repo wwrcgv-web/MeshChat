@@ -331,11 +331,9 @@ fun SettingsHub(
     var statusInput by remember { mutableStateOf(ProfileStore.myStatus(context)) }
     var runBg by remember { mutableStateOf(AppState.runInBackground) }
     var radioBle by remember { mutableStateOf(prefs.getBoolean("radio_ble", true)) }
-    var scanSend by remember { mutableStateOf(prefs.getBoolean(BleMeshManager.PREF_SCAN_SEND, true)) }
     var radioAware by remember { mutableStateOf(prefs.getBoolean("radio_wifi_aware", true)) }
     var radioDirect by remember { mutableStateOf(prefs.getBoolean("radio_wifi_direct", false)) }
-        var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
-    var liveOn by remember { mutableStateOf(AppState.liveOn) }
+    var radioLong by remember { mutableStateOf(prefs.getBoolean("radio_long_range", true)) }
     val awareSupported = remember { context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_AWARE) }
     val longSupported = remember {
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter?.isLeCodedPhySupported == true
@@ -438,9 +436,6 @@ fun SettingsHub(
                             radioBle = on; prefs.edit().putBoolean("radio_ble", on).apply()
                             BleMeshManager.instance?.setBleEnabled(on)
                         }
-                        HubSwitch(tr(lang, "scan_send"), tr(lang, "scan_send_note"), scanSend) { on ->
-                            scanSend = on; prefs.edit().putBoolean(BleMeshManager.PREF_SCAN_SEND, on).apply()
-                        }
                         HubSwitch("Wi-Fi Aware", if (awareSupported) "Gros fichiers entre voisins." else "Non supporté.", radioAware, awareSupported) { on ->
                             radioAware = on; prefs.edit().putBoolean("radio_wifi_aware", on).apply()
                             MeshService.instance?.setWifiAwareEnabled(on)
@@ -451,9 +446,6 @@ fun SettingsHub(
                         }
                         HubSwitch("Bluetooth longue portée", if (longSupported) "Plus loin, mais plus lent." else "Non supporté.", radioLong, longSupported) { on ->
                             radioLong = on; prefs.edit().putBoolean("radio_long_range", on).apply()
-                        }
-                        HubSwitch(tr(lang, "live"), tr(lang, "live_note"), liveOn) { on ->
-                            liveOn = on; AppState.liveOn = on; prefs.edit().putBoolean("live_on", on).apply()
                         }
                         Spacer(Modifier.height(16.dp))
                         AccountSection(context)
