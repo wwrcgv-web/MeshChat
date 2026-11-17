@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.example.meshchat.ble.MeshPacket
 import com.example.meshchat.ble.MeshPeer
 import com.example.meshchat.crypto.CryptoEngine
+import com.example.meshchat.crypto.SecureKeys
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.spec.PKCS8EncodedKeySpec
@@ -12,7 +13,7 @@ import java.security.spec.X509EncodedKeySpec
 import javax.crypto.SecretKey
 
 /**
- * Identité locale : identifiant, clés et contacts.
+ * Identité locale : identifiant, clés et contacts. Source unique de la paire de clés de ce téléphone.
  * Ne dépend pas de BleMeshManager, donc fonctionne même si le service BLE est arrêté.
  */
 object LocalIdentity {
@@ -20,9 +21,11 @@ object LocalIdentity {
     private const val PREFS = "meshchat"
     private const val KEY_MY_ID = "my_id"
     private const val KEY_MY_PUB = "my_pub"
-    private const val KEY_MY_PRIV = "my_priv"
     private const val PREFIX_PEER_KEY = "peer_"
     private const val PREFIX_PEER_NAME = "name_"
+
+    /** Paire gardée en mémoire : évite de rouvrir le Keystore à chaque message. */
+    @Volatile private var cached: KeyPair? = null
 
     private fun prefs(context: Context): SharedPreferences =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -37,31 +40,38 @@ object LocalIdentity {
         return hex
     }
 
-    /** Paire de clés EC P-256 de ce téléphone. */
+    /** Paire de clés EC P-256 de ce téléphone. Un seul thread à la fois peut la créer. */
+    @Synchronized
     fun myKeyPair(context: Context): KeyPair {
-        val p = prefs(context)
-        val pubHex = p.getString(KEY_MY_PUB, null)
-        val privHex = p.getString(KEY_MY_PRIV, null)
-        if (pubHex != null && privHex != null) {
-            return try {
-                val factory = KeyFactory.getInstance("EC")
-                KeyPair(
-                    factory.generatePublic(X509EncodedKeySpec(pubHex.hexToBytes())),
-                    factory.generatePrivate(PKCS8EncodedKeySpec(privHex.hexToBytes()))
-                )
-            } catch (e: Exception) {
-                generateAndSaveKeyPair(context)
-            }
+        cached?.let { return it }
+        val pair = loadKeyPair(context) ?: generateAndSaveKeyPair(context)
+        cached = pair
+        return pair
+    }
+
+    /** À appeler après une restauration de compte : force la relecture des clés. */
+    @Synchronized
+    fun invalidateCache() {
+        cached = null
+    }
+
+    private fun loadKeyPair(context: Context): KeyPair? {
+        val pubHex = prefs(context).getString(KEY_MY_PUB, null) ?: return null
+        val privBytes = SecureKeys.loadPrivate(context) ?: return null
+        return try {
+            val factory = KeyFactory.getInstance("EC")
+            KeyPair(
+                factory.generatePublic(X509EncodedKeySpec(pubHex.hexToBytes())),
+                factory.generatePrivate(PKCS8EncodedKeySpec(privBytes))
+            )
+        } catch (e: Exception) {
+            null
         }
-        return generateAndSaveKeyPair(context)
     }
 
     private fun generateAndSaveKeyPair(context: Context): KeyPair {
         val pair = CryptoEngine.newKeyPair()
-        prefs(context).edit()
-            .putString(KEY_MY_PUB, pair.public.encoded.toHex())
-            .putString(KEY_MY_PRIV, pair.private.encoded.toHex())
-            .apply()
+        SecureKeys.savePair(context, pair.public.encoded.toHex(), pair.private.encoded)
         return pair
     }
 
