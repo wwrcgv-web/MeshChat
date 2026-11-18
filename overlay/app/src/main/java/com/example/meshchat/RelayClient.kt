@@ -11,7 +11,9 @@ object RelayClient {
     const val BASE_URL = "https://samchat-relais.wwrcgv.workers.dev"
     private const val TIMEOUT_MS = 10_000
 
-    /** Internet est toujours actif : plus d'interrupteur pour l'utilisateur. */
+    /** Raison du dernier échec d'envoi, affichée dans le journal pour le diagnostic. */
+    @Volatile var lastError: String = ""
+
     @Suppress("UNUSED_PARAMETER")
     fun isEnabled(context: Context): Boolean = true
 
@@ -27,13 +29,20 @@ object RelayClient {
     private fun token(context: Context): String = BuildConfig.RELAY_TOKEN
 
     fun deposer(context: Context, destinataireHache: String, contenuChiffre: String): Boolean {
-        if (token(context).isEmpty()) return false
+        if (token(context).isEmpty()) {
+            lastError = "jeton absent dans l'app (secret RELAY_TOKEN)"
+            return false
+        }
         val corps = JSONObject()
             .put("destinataire", destinataireHache)
             .put("contenu_chiffre", contenuChiffre)
             .toString()
         val code = requete(context, "POST", "/deposer", corps)
-        return code == 201
+        if (code != 201) {
+            if (code > 0) lastError = "le serveur a répondu $code"
+            return false
+        }
+        return true
     }
 
     fun relever(context: Context, destinataireHache: String): List<String> {
@@ -57,6 +66,7 @@ object RelayClient {
             }
             connexion.responseCode
         } catch (e: Exception) {
+            lastError = "réseau : ${e.javaClass.simpleName}"
             -1
         } finally {
             connexion.disconnect()
@@ -89,6 +99,7 @@ object RelayClient {
             connexion.setRequestProperty("X-App-Token", token(context))
             connexion
         } catch (e: Exception) {
+            lastError = "connexion impossible"
             null
         }
     }
