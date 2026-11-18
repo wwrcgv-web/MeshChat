@@ -719,10 +719,19 @@ private fun MeshHome(
                             MeshState.addBubble(
                                 ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
                             )
-                        } else {
-                            // Échec : le texte revient dans la zone de saisie, rien n'est perdu
-                            if (draft.isEmpty()) draft = text
-                            log(t("send_fail"))
+                                                } else {
+                            // Échec Internet : repli sur le Bluetooth
+                            val m = BleMeshManager.instance
+                            val sent = m?.sendMessage(text, target) ?: 0
+                            if (sent > 0) {
+                                MeshState.addBubble(
+                                    ChatBubble(true, "moi", text, null, selectedChat, status = initialStatus(target), msgId = m?.lastSentId)
+                                )
+                            } else {
+                                if (draft.isEmpty()) draft = text
+                                log("Internet : ${RelayClient.lastError}")
+                                log(t("send_fail"))
+                            }
                         }
                     }
                 }.start()
