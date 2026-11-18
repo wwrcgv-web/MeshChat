@@ -199,12 +199,12 @@ class BleMeshManager(private val context: Context) {
      */
     @Volatile var openChatPeer: String? = null
 
-    val myId: ByteArray = loadOrCreateId()
+        val myId: ByteArray = loadOrCreateId()
 
     /** Mon identifiant en hexadécimal. */
-        private val keyPair: KeyPair = LocalIdentity.myKeyPair(context)
+    val myIdHex: String get() = myId.toHex()
 
-    private val keyPair: KeyPair = loadOrCreateKeyPair()
+    private val keyPair: KeyPair = LocalIdentity.myKeyPair(context)
 
     @Volatile var bleOn: Boolean = true
         private set
