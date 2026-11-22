@@ -60,8 +60,6 @@ private val TEXTS: Map<String, List<String>> = mapOf(
     "connection_hint" to listOf("Service, Bluetooth, Wi-Fi et Push-to-Talk.", "Service, Bluetooth, Wi-Fi and Push-to-Talk.", "Servicio, Bluetooth, Wi-Fi y Push-to-Talk.", "Serviço, Bluetooth, Wi-Fi e Push-to-Talk.", "الخدمة والبلوتوث والواي فاي والتحدث المباشر.", "服务、蓝牙、Wi-Fi 和按键通话。"),
     "relay" to listOf("Réseau et relais", "Network and relay", "Red y relevo", "Rede e retransmissão", "الشبكة والترحيل", "网络与中继"),
     "relay_hint" to listOf("Relais maximum, voisins, conservation.", "Max relays, neighbours, retention.", "Máximo de relevos, vecinos, conservación.", "Máximo de retransmissões, vizinhos, retenção.", "أقصى عدد من الترحيلات والجيران والاحتفاظ.", "最多中继、邻居、保留时间。"),
-    "contacts" to listOf("Contacts", "Contacts", "Contactos", "Contactos", "جهات الاتصال", "联系人"),
-    "contacts_hint" to listOf("Mon QR code, scanner, liste des contacts.", "My QR code, scan, contact list.", "Mi código QR, escanear, lista de contactos.", "Meu QR code, ler, lista de contactos.", "رمز QR الخاص بي، المسح، قائمة الجهات.", "我的二维码、扫描、联系人列表。"),
     "share" to listOf("Partage", "Share", "Compartir", "Partilhar", "مشاركة", "分享"),
     "share_hint" to listOf("Envoyer l'application à un proche.", "Send the app to someone.", "Enviar la app a alguien.", "Enviar a app a alguém.", "أرسل التطبيق إلى شخص قريب.", "把应用发送给亲友。"),
     "privacy" to listOf("Confidentialité et aide", "Privacy and help", "Privacidad y ayuda", "Privacidade e ajuda", "الخصوصية والمساعدة", "隐私与帮助"),
@@ -95,8 +93,6 @@ private val TEXTS: Map<String, List<String>> = mapOf(
     "update" to listOf("MISE À JOUR", "UPDATE", "ACTUALIZACIÓN", "ATUALIZAÇÃO", "التحديث", "更新"),
     "update_btn" to listOf("Vérifier les mises à jour", "Check for updates", "Buscar actualizaciones", "Verificar atualizações", "التحقق من التحديثات", "检查更新"),
     "update_note" to listOf("Ouvre la page de téléchargement de la dernière version.", "Opens the download page for the latest version.", "Abre la página de descarga de la última versión.", "Abre a página de transferência da versão mais recente.", "يفتح صفحة تنزيل أحدث إصدار.", "打开最新版本的下载页面。"),
-    "scan" to listOf("Scanner un QR code", "Scan a QR code", "Escanear un código QR", "Ler um QR code", "مسح رمز QR", "扫描二维码"),
-    "myqr" to listOf("Mon QR code", "My QR code", "Mi código QR", "Meu QR code", "رمز QR الخاص بي", "我的二维码"),
     "share_btn" to listOf("Partager Samchat", "Share Samchat", "Compartir Samchat", "Partilhar Samchat", "مشاركة Samchat", "分享 Samchat"),
     "debug_btn" to listOf("Ouvrir les outils de debug", "Open debug tools", "Abrir herramientas de depuración", "Abrir ferramentas de depuração", "فتح أدوات التصحيح", "打开调试工具"),
     "inst" to listOf("Installée depuis", "Installed from", "Instalada desde", "Instalada a partir de", "مثبّت من", "安装来源"),
@@ -310,7 +306,6 @@ fun SettingsHub(
     myName: String,
     myAvatar: Bitmap?,
     peers: List<MeshPeer>,
-    contacts: List<MeshPeer>,
     theme: String,
     version: String,
     installer: String,
@@ -318,8 +313,6 @@ fun SettingsHub(
     onSaveName: (String) -> Unit,
     onSaveStatus: (String) -> Unit,
     onChangePhoto: () -> Unit,
-    onShowQr: () -> Unit,
-    onScan: () -> Unit,
     onShare: () -> Unit,
     onDebug: () -> Unit,
     onBack: () -> Unit
@@ -346,10 +339,9 @@ fun SettingsHub(
         2 -> tr(lang, "appearance")
         3 -> tr(lang, "connection")
         4 -> tr(lang, "relay")
-        5 -> tr(lang, "contacts")
-        6 -> tr(lang, "share")
-        7 -> tr(lang, "privacy")
-        8 -> tr(lang, "diag")
+        5 -> tr(lang, "share")
+        6 -> tr(lang, "privacy")
+        7 -> tr(lang, "diag")
         else -> tr(lang, "settings")
     }
 
@@ -381,10 +373,9 @@ fun SettingsHub(
                         NavRow(1, tr(lang, "appearance"), tr(lang, "appearance_hint")) { page = 2 }
                         NavRow(2, tr(lang, "connection"), tr(lang, "connection_hint")) { page = 3 }
                         NavRow(3, tr(lang, "relay"), tr(lang, "relay_hint")) { page = 4 }
-                        NavRow(4, tr(lang, "contacts"), tr(lang, "contacts_hint")) { page = 5 }
-                        NavRow(5, tr(lang, "share"), tr(lang, "share_hint")) { page = 6 }
-                        NavRow(6, tr(lang, "privacy"), tr(lang, "privacy_hint")) { page = 7 }
-                        NavRow(7, tr(lang, "diag"), tr(lang, "diag_hint")) { page = 8 }
+                        NavRow(4, tr(lang, "share"), tr(lang, "share_hint")) { page = 5 }
+                        NavRow(5, tr(lang, "privacy"), tr(lang, "privacy_hint")) { page = 6 }
+                        NavRow(6, tr(lang, "diag"), tr(lang, "diag_hint")) { page = 7 }
                     }
 
                     1 -> {
@@ -456,30 +447,10 @@ fun SettingsHub(
                     }
 
                     5 -> {
-                        HubButton(tr(lang, "myqr"), onClick = onShowQr)
-                        Spacer(Modifier.height(10.dp))
-                        HubButton(tr(lang, "scan"), onClick = onScan)
-                        HubLabel("${tr(lang, "contacts").uppercase()} (${contacts.size})")
-                        if (contacts.isEmpty()) {
-                            Text("—", color = SamchatColors.Grey, fontSize = 15.sp)
-                        } else {
-                            contacts.forEach { c ->
-                                val online = peers.any { it.id == c.id }
-                                Text(
-                                    "@${MeshState.nameOf(c.id)}  ${if (online) "●" else "○"}",
-                                    color = if (online) SamchatColors.Green else SamchatColors.Grey,
-                                    fontSize = 16.sp,
-                                    modifier = Modifier.padding(vertical = 6.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    6 -> {
                         HubButton(tr(lang, "share_btn"), onClick = onShare)
                     }
 
-                    7 -> {
+                    6 -> {
                         NoteConfidentialite()
 
                         HubLabel(tr(lang, "update"))
@@ -521,7 +492,7 @@ fun SettingsHub(
                         Text(tr(lang, "help_body"), color = SamchatColors.White, fontSize = 15.sp)
                     }
 
-                    8 -> {
+                    7 -> {
                         Text("${tr(lang, "inst")} : $installer", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                         Text("${tr(lang, "peers")} : ${peers.size}", color = SamchatColors.White, fontSize = 13.sp, fontFamily = FontFamily.Monospace)
                         Spacer(Modifier.height(12.dp))

@@ -34,15 +34,15 @@ fun ModeSelector(
         horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         ModeOption(
-            titre = "Avec Internet",
-            sousTitre = "Messages partout",
+            titre = t("mode_internet"),
+            sousTitre = t("mode_internet_hint"),
             selected = internetOn,
             modifier = Modifier.weight(1f),
             onClick = { onChange(true) }
         )
         ModeOption(
-            titre = "Sans Internet",
-            sousTitre = "Amis à côté",
+            titre = t("mode_offline"),
+            sousTitre = t("mode_offline_hint"),
             selected = !internetOn,
             icon = painterResource(id = R.drawable.ic_bluetooth),
             modifier = Modifier.weight(1f),

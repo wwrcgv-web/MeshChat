@@ -136,8 +136,7 @@ fun ChatListScreen(
     serviceOn: Boolean,
     onOpen: (String) -> Unit,
     onSettings: () -> Unit,
-    onShowQr: () -> Unit,
-    onScan: () -> Unit
+    onShowQr: () -> Unit
 ) {
     var tab by remember { mutableStateOf(0) }
     var internetOn by remember { mutableStateOf(RelayClient.isEnabled(context)) }
@@ -223,8 +222,7 @@ fun ChatListScreen(
                         peers = peers,
                         profileTick = profileTick,
                         onOpen = onOpen,
-                        onShowQr = onShowQr,
-                        onScan = onScan
+                        onShowQr = onShowQr
                     )
                 }
             }

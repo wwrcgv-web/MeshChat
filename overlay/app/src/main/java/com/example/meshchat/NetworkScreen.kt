@@ -20,9 +20,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -64,8 +61,7 @@ fun NetworkScreen(
     peers: List<MeshPeer>,
     profileTick: Int,
     onOpen: (String) -> Unit,
-    onShowQr: () -> Unit,
-    onScan: () -> Unit
+    onShowQr: () -> Unit
 ) {
     Surface(modifier = Modifier.fillMaxSize(), color = Light.Background) {
         LazyColumn(
@@ -74,7 +70,7 @@ fun NetworkScreen(
         ) {
             item {
                 Spacer(Modifier.height(8.dp))
-                AccountCard(onShowQr = onShowQr, onScan = onScan)
+                AccountCard(onShowQr = onShowQr)
             }
             item {
                 Spacer(Modifier.height(6.dp))
@@ -110,12 +106,13 @@ fun NetworkScreen(
 
 /** Carte « Mon compte » : le bouton du QR code est large et en couleur, impossible à manquer. */
 @Composable
-private fun AccountCard(onShowQr: () -> Unit, onScan: () -> Unit) {
+private fun AccountCard(onShowQr: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(20.dp))
             .background(Light.Card)
+            .clickable(onClick = onShowQr)
             .padding(18.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -135,27 +132,10 @@ private fun AccountCard(onShowQr: () -> Unit, onScan: () -> Unit) {
                 Text(t("my_qr"), color = Light.Ink, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                 Text("@${MeshState.pseudo}", color = Light.Grey, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
+            Text("›", color = Light.Green, fontSize = 24.sp)
         }
         Spacer(Modifier.height(6.dp))
         Text(t("my_qr_note"), color = Light.Grey, fontSize = 14.sp)
-        Spacer(Modifier.height(14.dp))
-        Button(
-            onClick = onShowQr,
-            modifier = Modifier.fillMaxWidth().height(56.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = Light.Green, contentColor = Color.White)
-        ) {
-            Text(t("show_qr"), fontSize = 16.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.height(8.dp))
-        OutlinedButton(
-            onClick = onScan,
-            modifier = Modifier.fillMaxWidth().height(52.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = Light.Green)
-        ) {
-            Text(t("scan_qr"), fontSize = 16.sp)
-        }
     }
 }
 

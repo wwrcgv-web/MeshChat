@@ -68,8 +68,6 @@ import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
 import com.example.meshchat.service.RelayService
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
@@ -960,35 +958,19 @@ private fun MeshHome(
         log("Live : fin")
     }
 
-    val scanOptions = ScanOptions()
-        .setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-        .setPrompt("Visez le QR code de l'autre téléphone")
-        .setBeepEnabled(false)
-        .setOrientationLocked(false)
-    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val text = result.contents
+    /** Traite un QR code lu sur l'écran de partage. */
+    fun traiterScan(text: String?) {
         if (text == null) {
             log("Scan annulé")
-        } else {
-            val added = QrShare.addContact(context, text)
-            if (added != null) {
-                log("Contact ajouté : $added. Redémarrage du service…")
-                MeshState.refresh()
-                onRestart()
-            } else {
-                log("QR code non reconnu")
-            }
+            return
         }
-    }
-    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) scanLauncher.launch(scanOptions) else log("Caméra refusée dans les réglages du téléphone")
-    }
-
-    fun startScan() {
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            scanLauncher.launch(scanOptions)
+        val added = QrShare.addContact(context, text)
+        if (added != null) {
+            log("Contact ajouté : $added. Redémarrage du service…")
+            MeshState.refresh()
+            onRestart()
         } else {
-            cameraPermission.launch(Manifest.permission.CAMERA)
+            log("QR code non reconnu")
         }
     }
 
@@ -1063,34 +1045,12 @@ private fun MeshHome(
     }
 
     if (showMyQr) {
-        // Fond clair volontaire : un QR code se scanne mieux sur blanc, même en plein soleil
-        val qrInk = Color(0xFF111827)
-        val qrGrey = Color(0xFF5F6B63)
-        AlertDialog(
-            onDismissRequest = { showMyQr = false },
-            containerColor = Color.White,
-            titleContentColor = qrInk,
-            textContentColor = qrGrey,
-            title = { Text(t("my_qr"), fontSize = 20.sp, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                    val content = QrShare.myContent(context)
-                    if (content != null) {
-                        val qr = remember(content) { QrShare.bitmap(content) }
-                        Image(bitmap = qr.asImageBitmap(), contentDescription = t("my_qr"), modifier = Modifier.size(260.dp))
-                        Spacer(Modifier.height(10.dp))
-                        Text(t("my_qr_note"), fontSize = 14.sp, color = qrGrey)
-                    } else {
-                        Text("—", fontSize = 15.sp)
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { showMyQr = false },
-                    modifier = Modifier.height(48.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F8A4F))
-                ) { Text(t("close"), fontSize = 16.sp) }
+        QrScreen(
+            context = context,
+            onClose = { showMyQr = false },
+            onScanned = { texte ->
+                showMyQr = false
+                traiterScan(texte)
             }
         )
     }
@@ -1138,7 +1098,6 @@ private fun MeshHome(
             myName = myName,
             myAvatar = myAvatar,
             peers = peers,
-            contacts = contacts,
             theme = theme,
             version = dist.version,
             installer = dist.installer,
@@ -1146,8 +1105,6 @@ private fun MeshHome(
             onSaveName = { saveName(it) },
             onSaveStatus = { saveStatus(it) },
             onChangePhoto = { avatarLauncher.launch("image/*") },
-            onShowQr = { showSettings = false; showMyQr = true },
-            onScan = { showSettings = false; startScan() },
             onShare = { if (!ShareApp.share(context)) log(t("send_fail")) },
             onDebug = { showSettings = false; showDebug = true },
             onBack = { showSettings = false }
@@ -1167,8 +1124,7 @@ private fun MeshHome(
             serviceOn = AppState.serviceOn,
             onOpen = { id -> selectedChat = id; inChat = true },
             onSettings = { showSettings = true },
-            onShowQr = { showMyQr = true },
-            onScan = { startScan() }
+            onShowQr = { showMyQr = true }
         )
         return
     }

@@ -571,7 +571,7 @@ object MeshState {
 
     /** Notification d'un vocal ou d'une photo : privée si l'expéditeur est connu, sinon sur « Tous ». */
     private fun notifyBlob(from: String?, text: String) {
-        if (from == null) notifyMessage(PUBLIC, "Tous", text)
+        if (from == null) notifyMessage(PUBLIC, t("all_group"), text)
         else notifyMessage("p$from", "@${nameOf(from)}", text)
     }
 
@@ -621,7 +621,7 @@ object MeshState {
                 val sender = rest.substringBefore(" : ")
                 val text = rest.substringAfter(" : ", "")
                 addBubble(ChatBubble(false, sender, text, null, PUBLIC))
-                notifyMessage(PUBLIC, "Tous · @${nameOf(sender)}", text)
+                notifyMessage(PUBLIC, "${t("all_group")} · @${nameOf(sender)}", text)
             }
             line.startsWith("Pair trouvé") -> addJournal(line)
             line.startsWith("Fichier reçu") -> { count("in_file"); addJournal(line) }
