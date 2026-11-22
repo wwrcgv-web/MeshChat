@@ -22,7 +22,7 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 | 2 | Trois relèves sur la même boîte | À faire (étape 2) | **Déjà corrigé + durci le 22/11/2026** (voir fiche 2) |
 | 3 | Messages relevés seulement au retour dans l'app | À faire (étape 3) | **Déjà corrigé + relève immédiate le 22/11/2026** (option A, voir fiche 3) |
 | 4 | Envoi refusé quand Samchat est arrêté | À faire | **Corrigé (lots A+B+C, 22/11/2026)** : envoi et relève indépendants du BLE |
-| 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel, terrain préparé** : `DeviceKey` prêt ; aucun champ jeton dans l'UI existante |
+| 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Branché le 22/11/2026** : appareil signé ; le jeton reste requis pour déposer |
 | 6 | Faux accusés de réception acceptés | À faire | **Corrigé le 22/11/2026** : authentification avant suppression |
 | 7 | APK de debug : mise à jour impossible | À faire | **Fait et vérifié le 22/11/2026** : release signée, mise à jour par-dessus sans perte |
 
@@ -118,13 +118,10 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   rapport citait `SettingsHub.kt:573`, or ce fichier fait 534 lignes et ne parle que des
   réglages de relais BLE). Il n'y a donc rien à masquer : le seul point d'entrée est le secret
   de compilation.
-- **Terrain préparé le 22/11/2026** : `DeviceKey.kt` crée une clé EC P-256 de signature dans le
-  Keystore Android (alias `samchat_device_key`), expose `publicKeyHex()`, `deviceId()` et
-  `sign(data)`. **Volontairement non branché** : le Worker ne sait pas encore vérifier les
-  signatures, et `RelayClient` continue d'envoyer `X-App-Token`.
-- Prochaine étape (avec le code du Worker) : `/enregistrer` avec `publicKeyHex`, puis en-têtes
-  `X-Device-Id` + `X-Device-Signature` sur `/deposer` et `/relever`, et suppression du jeton.
-- **Verdict : réel**, en attente du Worker.
+- **Branché le 22/11/2026** (voir « Relais v3 » ci-dessous) : `DeviceKey` signe, `RelayClient`
+  s'inscrit auprès du Worker, `/relever` et `/confirmer` sont authentifiés par signature.
+- Il reste à activer `DEPOT_SIGNATURE=true` côté Worker, observer quelques jours, puis retirer
+  `APP_TOKEN` (et rebâtir l'app une dernière fois sans secret de compilation).
 
 ### 6. Faux accusés — `BleMeshManager.handleAck()`
 - Défaut : `confirmedId` circule en clair ; `deliveredIds.add`, `store.remove` et
@@ -176,7 +173,8 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - `MainActivity` : `cgv_accepted` (booléen) + `cgv_accepted_at` (horodatage) dans les
   préférences `meshchat`. Tant que ce n'est pas accepté : **aucun service, aucune permission,
   aucun attachement de `MeshState`**. `startAfterTerms()` regroupe ces démarrages.
-- Le texte est en français uniquement : la traduction (Strings.kt) reste à faire si besoin.
+- Textes traduits FR/EN (clés `terms_*` dans `Strings.kt`) ; les 4 autres langues affichent
+  l'anglais pour ces clés.
 - **Vérifié sur téléphone le 22/11/2026** : bouton grisé tant que la case n'est pas cochée,
   permissions demandées seulement après acceptation, écran non réaffiché au lancement suivant.
 - ⚠️ Juridiquement, ceci n'est qu'un écran d'information : un vrai texte de CGU/politique de
@@ -233,7 +231,6 @@ Côté app :
 - Page « Contacts » des réglages supprimée (boutons QR/scan + liste doublon) ; pages
   suivantes renumérotées. La liste des contacts reste dans l'onglet du bas.
 - Carte « Mon compte » cliquable, sans bouton ; l'icône QR de la barre ouvre le même écran.
-- Clés `show_qr` et `scan_qr` ajoutées aux 6 langues.
 - Note : `QrShare.kt` ne contient aucune UI (uniquement la génération/lecture du QR) et
   `AccountScreen.kt` reste la section « sauvegarde du compte » des réglages : non modifiés.
 
