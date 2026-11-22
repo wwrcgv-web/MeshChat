@@ -1,0 +1,14 @@
+# Clés de signature : jamais dans le dépôt
+*.p12
+*.jks
+*.keystore
+*.b64
+
+# Sorties de compilation
+build/
+.gradle/
+local.properties
+
+# Divers
+.DS_Store
+*.apk

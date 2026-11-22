@@ -42,17 +42,33 @@ jobs:
           fi
           printf '\n\ntasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {\n    kotlinOptions.jvmTarget = "1.8"\n}\n' >> "$FILE"
 
-      - name: Build APK
+      - name: Décoder le keystore
         run: |
-          FILE=$(find extracted -name build.gradle.kts -o -name build.gradle | head -n 1)
-          DIR=$(dirname "$FILE")
-          cd "$DIR"
-          gradle assembleDebug
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/samchat.p12"
+          test -s "$RUNNER_TEMP/samchat.p12" || { echo "Keystore vide : secret KEYSTORE_BASE64 absent ?"; exit 1; }
+
+      - name: Build APK signé
+        env:
+          RELEASE_KEYSTORE: ${{ runner.temp }}/samchat.p12
+          RELEASE_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          FILE=$(find extracted -path '*/app/build.gradle.kts' -type f | head -n 1)
+          if [ -z "$FILE" ]; then
+            echo "Fichier app/build.gradle.kts introuvable"
+            exit 1
+          fi
+          cd "$(dirname "$FILE")"
+          gradle assembleRelease
+          # Une build release non signée ne doit pas être publiée en silence
+          test -n "$(find build/outputs/apk/release -name 'app-release.apk')" \
+            || { echo "APK non signée : vérifier RELEASE_KEYSTORE et les secrets"; exit 1; }
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MeshChat-APK
-          path: extracted/**/build/outputs/apk/debug/*.apk
+          name: MeshChat-APK-release
+          path: extracted/**/build/outputs/apk/release/*.apk
           if-no-files-found: error

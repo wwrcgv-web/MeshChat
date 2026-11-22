@@ -24,7 +24,7 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 | 4 | Envoi refusé quand Samchat est arrêté | À faire | **Corrigé (lots A+B+C, 22/11/2026)** : envoi et relève indépendants du BLE |
 | 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel, terrain préparé** : `DeviceKey` prêt ; aucun champ jeton dans l'UI existante |
 | 6 | Faux accusés de réception acceptés | À faire | **Corrigé le 22/11/2026** : authentification avant suppression |
-| 7 | APK de debug : mise à jour impossible | À faire | **Réel** : `assembleDebug` seulement, pas de signature fixe |
+| 7 | APK de debug : mise à jour impossible | À faire | **Préparé le 22/11/2026** : release signée configurée, secrets GitHub à créer |
 
 ## Constat préalable (important)
 
@@ -147,8 +147,23 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   (ignoré).
 
 ### 7. APK de debug — `.github/workflows/main.yml`
-- `gradle assembleDebug`, `upload-artifact` du dossier `apk/debug`.
-- **Verdict : réel.**
+- Défaut : `gradle assembleDebug` + upload de `apk/debug` → nouvelle clé de debug à chaque
+  build, mise à jour impossible sans désinstaller (perte de l'identité et de l'historique).
+
+**Préparation appliquée le 22/11/2026** (non poussée) :
+- Keystore `samchat-release.p12` (RSA 4096, PKCS12, alias `samchat`, valide jusqu'en 2056)
+  généré hors du dépôt (`/root/workspace/.keys/`, copie dans `/sdcard/Download/DSH-Go/keystore/`).
+- `.gitignore` : `*.p12`, `*.jks`, `*.keystore`, `*.b64`, `*.apk`, `build/`, `.gradle/`.
+- `overlay/app/build.gradle.kts` : `signingConfigs.release` lisant `RELEASE_KEYSTORE`,
+  `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD` ; `versionCode`
+  dérivé de `GITHUB_RUN_NUMBER`, `versionName = 0.2.<run>`.
+- Workflow : décodage du secret `KEYSTORE_BASE64` dans `$RUNNER_TEMP`, `gradle assembleRelease`,
+  échec explicite si l'APK sort non signée, upload de `apk/release`.
+- **Reste à faire (par l'utilisateur)** : créer les 4 secrets GitHub, puis pousser ; la première
+  release imposera une désinstallation aux testeurs de l'APK debug (signature différente).
+- ⚠️ Le mot de passe et le keystore ont transité par la conversation : à sauvegarder hors ligne,
+  et à considérer comme exposés.
+
 
 ## À traiter ensuite (non bloquant, hors ordre)
 

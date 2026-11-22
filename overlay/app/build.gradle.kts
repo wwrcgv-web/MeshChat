@@ -11,13 +11,35 @@ android {
         applicationId = "com.example.meshchat"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Numéro de build GitHub : une mise à jour doit toujours avoir un versionCode supérieur
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "0.2.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
         buildConfigField("String", "RELAY_TOKEN", "\"${System.getenv("RELAY_TOKEN") ?: ""}\"")
     }
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    // Signature de production : le Keystore et ses mots de passe viennent de l'environnement
+    // (secrets GitHub), jamais du dépôt. Absent en local : la build release reste non signée.
+    signingConfigs {
+        val storePath = System.getenv("RELEASE_KEYSTORE")
+        if (!storePath.isNullOrBlank()) {
+            create("release") {
+                storeFile = file(storePath)
+                storePassword = System.getenv("RELEASE_STORE_PASSWORD")
+                keyAlias = System.getenv("RELEASE_KEY_ALIAS")
+                keyPassword = System.getenv("RELEASE_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release")
+        }
     }
 }
 
