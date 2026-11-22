@@ -92,6 +92,19 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - La **relève** exige le service (elle y tourne).
 - **Verdict : partiellement corrigé** ; à repréciser avant de clore.
 
+**Plan validé en 3 lots** (A → B → C) :
+- **Lot A (appliqué 22/11/2026)** : `MeshState.attach()` idempotent, appelé depuis
+  `MainActivity.onCreate` ; `refresh()` retombe sur `LocalIdentity.knownContacts()` et sur
+  les préférences quand `BleMeshManager.instance` est absent. → conversations et historique
+  disponibles service Bluetooth coupé ; l'envoi Internet n'est plus bloqué par l'annuaire vide.
+- **Lot B (à faire)** : extraire `RelayPoll` dans un `service/RelayService.kt` dédié
+  (`foregroundServiceType="dataSync"`), indépendant du BLE ; `MeshService` ne garde que le BLE.
+  Contraintes : démarrage depuis une Activity visible (Android 12+), permission
+  `FOREGROUND_SERVICE_DATA_SYNC` (Android 14), un seul `RelayPoll.start()`.
+- **Lot C (à faire, avec la ligne 5)** : `RelayClient.isEnabled/setEnabled` réels, pour que
+  « Sans Internet » coupe vraiment le relais.
+- Reste couplé tant que B n'est pas fait : réception et accusés (la relève tourne dans le service).
+
 ### 5. Jeton obligatoire — `RelayClient.kt`, `build.gradle.kts`
 - `token()` = `BuildConfig.RELAY_TOKEN` (variable d'env. à la compilation).
 - `saveToken()` et `setEnabled()` sont vides ; l'interrupteur « Avec Internet » n'a aucun effet.

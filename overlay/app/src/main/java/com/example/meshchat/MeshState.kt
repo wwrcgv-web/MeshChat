@@ -167,6 +167,8 @@ object MeshState {
     /** Délai sans morceau de voix au-delà duquel une nouvelle prise de parole est annoncée dans le journal. */
     private const val LIVE_GAP_MS = 3_000L
     private const val CHANNEL_MESSAGES = "meshchat_messages"
+    /** Préférences partagées de l'app (identifiant, nom, contacts) : lues aussi sans le service. */
+    private const val PREFS = "meshchat"
     private const val MAX_NOTIF_TEXT = 120
     private const val HISTORY_FILE = "historique.json"
     private const val MEDIA_DIR = "media"
@@ -211,8 +213,13 @@ object MeshState {
     @Volatile private var startedActivities = 0
     private var callbacksRegistered = false
 
-    /** Branché une seule fois, par le service. Les messages arrivent ensuite, écran fermé ou non. */
+    /**
+     * Branché une seule fois, par le service ou par l'écran. Les messages arrivent ensuite,
+     * écran fermé ou non. Sans service (Bluetooth arrêté), l'écran peut quand même lire
+     * l'historique et l'annuaire : l'envoi par Internet ne dépend plus du Bluetooth.
+     */
     fun attach(context: Context) {
+        if (appContext != null) return
         appContext = context.applicationContext
         loadHistory(context.applicationContext)
         BleMeshManager.listener = { line -> onLine(line) }
@@ -223,6 +230,8 @@ object MeshState {
         BleMeshManager.blobListener = { bytes, from -> onBlob(bytes, from) }
         BleMeshManager.liveListener = { sender, audio -> onLive(sender, audio) }
         registerVisibilityTracking(context.applicationContext)
+        // Liste des contacts tout de suite, même si le service Bluetooth n'est pas démarré
+        refresh()
     }
 
     /** Recharge les conversations sauvegardées. Ne se fait qu'une fois par lancement de l'app. */
@@ -364,12 +373,24 @@ object MeshState {
         override fun onActivityDestroyed(activity: Activity) {}
     }
 
-    /** Recalcule le pseudo et la liste des contacts à partir du gestionnaire Bluetooth. */
+    /**
+     * Recalcule le pseudo et la liste des contacts. Avec le service Bluetooth, tout vient de lui ;
+     * sans service, on relit directement les préférences (identifiant, nom, clés des contacts),
+     * pour que les conversations restent joignables par Internet.
+     */
     fun refresh() {
-        val m = BleMeshManager.instance ?: return
-        val name = m.myName
-        pseudo = if (name.isNotBlank()) name else pseudoFrom(m.myId.joinToString("") { "%02x".format(it) }.take(8))
-        contacts = m.knownContacts()
+        val m = BleMeshManager.instance
+        if (m != null) {
+            val name = m.myName
+            pseudo = if (name.isNotBlank()) name else pseudoFrom(m.myId.joinToString("") { "%02x".format(it) }.take(8))
+            contacts = m.knownContacts()
+            return
+        }
+        val context = appContext ?: return
+        val name = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .getString("my_name", "")?.trim().orEmpty()
+        pseudo = if (name.isNotBlank()) name else pseudoFrom(LocalIdentity.myIdHex(context).take(8))
+        contacts = LocalIdentity.knownContacts(context)
     }
 
     /** Nom à afficher pour un identifiant : le nom reçu, sinon anonXXXX. */

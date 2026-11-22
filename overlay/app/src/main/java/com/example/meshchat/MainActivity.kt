@@ -232,6 +232,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppState.liveOn = getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean("live_on", false)
         Lang.load(this)
+        // Annuaire et historique disponibles même sans service Bluetooth :
+        // l'envoi par Internet ne doit pas dépendre du Bluetooth
+        MeshState.attach(this)
         setContent {
             MeshHome(
                 onStart = { askPermissions() },
