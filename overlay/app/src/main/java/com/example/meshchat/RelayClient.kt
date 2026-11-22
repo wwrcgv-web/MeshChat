@@ -14,6 +14,9 @@ object RelayClient {
     /** Raison du dernier échec d'envoi, affichée dans le journal pour le diagnostic. */
     @Volatile var lastError: String = ""
 
+    /** Code HTTP de la dernière relève : 0 = pas encore de réponse, -1 = connexion impossible. */
+    @Volatile var lastReleveCode: Int = 0
+
     @Suppress("UNUSED_PARAMETER")
     fun isEnabled(context: Context): Boolean = true
 
@@ -46,13 +49,25 @@ object RelayClient {
     }
 
     fun relever(context: Context, destinataireHache: String): List<String> {
-        if (token(context).isEmpty()) return emptyList()
+        if (token(context).isEmpty()) {
+            lastError = "jeton absent dans l'app (secret RELAY_TOKEN)"
+            return emptyList()
+        }
         val query = "?destinataire=" + URLEncoder.encode(destinataireHache, "UTF-8")
-        val reponse = lireReponse(context, "GET", "/relever$query", null) ?: return emptyList()
+        val reponse = lireReponse(context, "GET", "/relever$query", null)
+        if (reponse == null) {
+            lastError = when {
+                lastReleveCode > 0 -> "relève refusée par le relais (HTTP $lastReleveCode)"
+                lastReleveCode < 0 -> "relève impossible (réseau)"
+                else -> "relève impossible (pas de réponse)"
+            }
+            return emptyList()
+        }
         return try {
             val tableau: JSONArray = JSONObject(reponse).getJSONArray("messages")
             (0 until tableau.length()).map { tableau.getJSONObject(it).getString("contenu_chiffre") }
         } catch (e: Exception) {
+            lastError = "réponse du relais illisible"
             emptyList()
         }
     }
@@ -74,15 +89,21 @@ object RelayClient {
     }
 
     private fun lireReponse(context: Context, methode: String, chemin: String, corps: String?): String? {
-        val connexion = ouvrir(context, methode, chemin) ?: return null
+        val connexion = ouvrir(context, methode, chemin) ?: run {
+            lastReleveCode = -1
+            return null
+        }
         return try {
             if (corps != null) {
                 connexion.doOutput = true
                 connexion.outputStream.use { it.write(corps.toByteArray(Charsets.UTF_8)) }
             }
-            if (connexion.responseCode != 200) null
+            val code = connexion.responseCode
+            lastReleveCode = code
+            if (code != 200) null
             else connexion.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
         } catch (e: Exception) {
+            lastReleveCode = -1
             null
         } finally {
             connexion.disconnect()

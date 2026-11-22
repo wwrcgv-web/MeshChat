@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.Base64
 import com.example.meshchat.crypto.CryptoEngine
 import kotlinx.coroutines.*
+import org.json.JSONArray
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.security.MessageDigest
 import javax.crypto.SecretKey
 
 object RelayPoll {
@@ -17,6 +20,11 @@ object RelayPoll {
     private const val MAX_TEXT_CHARS = 10_000
     private const val MAX_ID_CHARS = 32
     private const val MAX_SMALL_BYTES = 10 * 1024 * 1024
+    /** Contenu qu'aucune clé ne déchiffre : on le note pour ne pas le réessayer à chaque relève. */
+    private const val OPAQUE_EXPIRY_MS = 30 * 60 * 1000L
+    private const val MAX_OPAQUE = 500
+    /** Identifiants déjà traités, sauvegardés pour survivre au redémarrage du service. */
+    private const val PROCESSED_FILE = "relay_processed.json"
 
     private const val PREFIX_TEXT = "ID:"
     private const val PREFIX_FILE = "CH:"
@@ -39,6 +47,12 @@ object RelayPoll {
 
     private val pending = LinkedHashMap<String, PendingFile>()
     private val processedIds = LinkedHashSet<String>()
+    /** Empreintes des contenus indéchiffrables, avec leur date d'arrivée. */
+    private val opaqueSeen = LinkedHashMap<String, Long>()
+    /** Fichier de sauvegarde des identifiants traités (préférences locales de l'app). */
+    private var processedFile: File? = null
+    private var processedLoaded = false
+    @Volatile private var processedDirty = false
     private var pollJob: Job? = null
 
     /** Démarre la relève toutes les 5 secondes. Remplace une relève déjà en cours. */
@@ -67,38 +81,69 @@ object RelayPoll {
     suspend fun pollOnce(context: Context, onResult: (RelayResult) -> Unit) {
         withContext(Dispatchers.IO) {
             if (!RelayClient.isEnabled(context)) return@withContext
-            val myHash = RelayDispatch.hacherDestinataire(LocalIdentity.myIdHex(context))
-            val messages = RelayClient.relever(context, myHash)
-            if (messages.isEmpty()) return@withContext
-
-            // Les clés partagées sont calculées une seule fois par relève
-            val keys = LocalIdentity.knownContacts(context).mapNotNull { contact ->
-                LocalIdentity.sharedKeyWith(context, contact.id)?.let { contact.id to it }
+            ensureLoaded(context)
+            try {
+                releverEtTraiter(context, onResult)
+            } finally {
+                persistProcessed()
             }
-            if (keys.isEmpty()) return@withContext
+        }
+    }
 
-            for (content in messages) {
-                val encrypted = try {
-                    Base64.decode(content, Base64.NO_WRAP)
-                } catch (e: Exception) {
-                    continue
-                }
-                for ((contactId, key) in keys) {
-                    val clear = CryptoEngine.decrypt(encrypted, key) ?: continue
-                    processClear(context, contactId, clear, key, onResult)
-                    break
-                }
+    /**
+     * Une relève : un seul appel au relais, puis tri et traitement de chaque contenu.
+     * Rien n'est redemandé deux fois : les identifiants traités sont mémorisés, et un contenu
+     * qu'aucune clé ne déchiffre est écarté pour un moment au lieu d'être repris à chaque tour.
+     */
+    private suspend fun releverEtTraiter(context: Context, onResult: (RelayResult) -> Unit) {
+        val myHash = RelayDispatch.hacherDestinataire(LocalIdentity.myIdHex(context))
+        val messages = RelayClient.relever(context, myHash)
+        if (messages.isEmpty()) return
+
+        // Les clés partagées sont calculées une seule fois par relève
+        val keys = LocalIdentity.knownContacts(context).mapNotNull { contact ->
+            LocalIdentity.sharedKeyWith(context, contact.id)?.let { contact.id to it }
+        }
+        if (keys.isEmpty()) return
+
+        for (content in messages) {
+            val fp = empreinte(content)
+            if (opaqueRecent(fp)) continue
+            val encrypted = try {
+                Base64.decode(content, Base64.NO_WRAP)
+            } catch (e: Exception) {
+                noteOpaque(fp)
+                continue
             }
+            var open = false
+            for ((contactId, key) in keys) {
+                val clear = CryptoEngine.decrypt(encrypted, key) ?: continue
+                open = true
+                processClear(context, contactId, clear, key, onResult)
+                break
+            }
+            if (!open) noteOpaque(fp)
         }
     }
 
     private suspend fun processClear(context: Context, senderId: String, clear: ByteArray, key: SecretKey, onResult: (RelayResult) -> Unit) {
         val text = String(clear, Charsets.UTF_8)
-        when {
-            text.startsWith(PREFIX_TEXT) -> processText(context, senderId, text, key, onResult)
-            text.startsWith(PREFIX_FILE) -> processFile(context, senderId, text, key, onResult)
-            text.startsWith(PREFIX_ACK) -> processAck(text, onResult)
+        when (classer(text)) {
+            Kind.TEXTE -> processText(context, senderId, text, key, onResult)
+            Kind.FICHIER -> processFile(context, senderId, text, key, onResult)
+            Kind.ACCUSE -> processAck(text, onResult)
+            Kind.INCONNU -> Unit
         }
+    }
+
+    /** Type d'un contenu déchiffré, d'après son préfixe. Fonction pure, vérifiable seule. */
+    enum class Kind { TEXTE, FICHIER, ACCUSE, INCONNU }
+
+    fun classer(texte: String): Kind = when {
+        texte.startsWith(PREFIX_TEXT) -> Kind.TEXTE
+        texte.startsWith(PREFIX_FILE) -> Kind.FICHIER
+        texte.startsWith(PREFIX_ACK) -> Kind.ACCUSE
+        else -> Kind.INCONNU
     }
 
     private suspend fun processText(context: Context, senderId: String, text: String, key: SecretKey, onResult: (RelayResult) -> Unit) {
@@ -209,6 +254,77 @@ object RelayPoll {
         while (processedIds.size > MAX_PROCESSED_IDS) {
             processedIds.remove(processedIds.first())
         }
+        processedDirty = true
         return true
+    }
+
+    /** Empreinte stable d'un contenu chiffré reçu : on ne retente pas indéfiniment le même. */
+    private fun empreinte(content: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /** Vrai si ce contenu a déjà échoué au déchiffrement récemment. */
+    private fun opaqueRecent(fp: String): Boolean = synchronized(this) {
+        purgeOpaque()
+        opaqueSeen.containsKey(fp)
+    }
+
+    private fun noteOpaque(fp: String) {
+        synchronized(this) {
+            purgeOpaque()
+            if (opaqueSeen.size >= MAX_OPAQUE) {
+                opaqueSeen.remove(opaqueSeen.keys.first())
+            }
+            opaqueSeen[fp] = System.currentTimeMillis()
+        }
+    }
+
+    private fun purgeOpaque() {
+        val limit = System.currentTimeMillis() - OPAQUE_EXPIRY_MS
+        opaqueSeen.entries.removeAll { it.value < limit }
+    }
+
+    /** Charge les identifiants déjà traités, une seule fois par lancement du service. */
+    @Synchronized
+    private fun ensureLoaded(context: Context) {
+        if (processedLoaded) return
+        processedLoaded = true
+        val f = File(context.filesDir, PROCESSED_FILE)
+        processedFile = f
+        if (!f.exists()) return
+        try {
+            val array = JSONArray(f.readText())
+            for (i in 0 until array.length()) {
+                val id = array.optString(i)
+                if (id.isNotEmpty()) processedIds.add(id)
+            }
+            while (processedIds.size > MAX_PROCESSED_IDS) processedIds.remove(processedIds.first())
+        } catch (e: Exception) {
+            // Fichier illisible : on repart d'un ensemble vide, sans bloquer la relève
+        }
+    }
+
+    /** Écrit les identifiants traités sur le téléphone. Appelé depuis la relève, hors du fil écran. */
+    private fun persistProcessed() {
+        val f = processedFile ?: return
+        val snapshot = snapshotIfDirty() ?: return
+        try {
+            val array = JSONArray()
+            snapshot.forEach { array.put(it) }
+            val tmp = File(f.path + ".tmp")
+            tmp.writeText(array.toString())
+            tmp.renameTo(f)
+        } catch (e: Exception) {
+            // Sauvegarde impossible : on réessaiera au prochain tour plutôt que de perdre la liste
+            processedDirty = true
+        }
+    }
+
+    @Synchronized
+    private fun snapshotIfDirty(): List<String>? {
+        if (!processedDirty) return null
+        processedDirty = false
+        return processedIds.toList()
     }
 }
