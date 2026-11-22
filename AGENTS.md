@@ -223,7 +223,16 @@ Côté app :
   plein soleil. Carte « Mon compte » avec un gros bouton vert « Afficher mon QR code » (56 dp)
   et « Scanner un QR code » ; section Contacts nettement séparée.
 - Icône QR (`ic_qr.xml`) ajoutée en haut à droite de la barre d'accueil sur cet onglet.
-- Dialogue du QR passé en fond blanc (meilleur contraste de scan), titre foncé, bouton vert.
+- Écran QR dédié (`QrScreen.kt`) en deux onglets : « Mon QR code » (phrase verte, QR 270 dp sur
+  blanc, pseudo en gras) et « Scanner » (caméra plein écran avec cadre, démarrée seulement sur
+  cet onglet, `BarcodeView` créée à l'entrée et mise en pause à la sortie). Titre « Contacts » +
+  croix de fermeture.
+- L'écran est rendu dans un `Dialog` plein écran (`usePlatformDefaultWidth = false`,
+  `decorFitsSystemWindows = false`) : sans cela, il était composé derrière le `Surface` de
+  l'accueil et restait invisible. **Vérifié sur téléphone le 22/11/2026.**
+- Page « Contacts » des réglages supprimée (boutons QR/scan + liste doublon) ; pages
+  suivantes renumérotées. La liste des contacts reste dans l'onglet du bas.
+- Carte « Mon compte » cliquable, sans bouton ; l'icône QR de la barre ouvre le même écran.
 - Clés `show_qr` et `scan_qr` ajoutées aux 6 langues.
 - Note : `QrShare.kt` ne contient aucune UI (uniquement la génération/lecture du QR) et
   `AccountScreen.kt` reste la section « sauvegarde du compte » des réglages : non modifiés.
