@@ -80,13 +80,13 @@ fun AccountSection(context: Context) {
     if (confirmer) {
         AlertDialog(
             onDismissRequest = { confirmer = false },
-            title = { Text("Remplacer ce compte ?") },
-            text = { Text("Ton identité et tes contacts actuels seront remplacés par ceux de la sauvegarde. Cette action ne peut pas être annulée.") },
+            title = { Text(t("acc_replace_q")) },
+            text = { Text(t("acc_replace_note")) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmer = false
                     occupe = true
-                    message = "Restauration en cours…"
+                    message = t("acc_restoring")
                     val sauvegarde = aRestaurer
                     val mdp = motDePasseRestauration
                     Thread {
@@ -100,30 +100,30 @@ fun AccountSection(context: Context) {
                             if (ok) {
                                 aRestaurer = ""
                                 motDePasseRestauration = ""
-                                message = "Compte restauré. Le service redémarre : ferme puis rouvre l'app."
+                                message = t("acc_restored")
                                 relancerService(context)
                             } else {
-                                message = "Échec : mot de passe ou sauvegarde incorrect"
+                                message = t("acc_restore_fail")
                             }
                         }
                     }.start()
-                }) { Text("Remplacer", fontSize = 16.sp) }
+                }) { Text(t("acc_replace"), fontSize = 16.sp) }
             },
             dismissButton = {
-                TextButton(onClick = { confirmer = false }) { Text("Annuler", fontSize = 16.sp) }
+                TextButton(onClick = { confirmer = false }) { Text(t("cancel"), fontSize = 16.sp) }
             }
         )
     }
 
     Column(Modifier.fillMaxWidth()) {
-        Text("Sauvegarde du compte", color = SamchatColors.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text(t("acc_backup_title"), color = SamchatColors.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         TextField(
             value = motDePasse,
             onValueChange = { motDePasse = it },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            placeholder = { Text("Mot de passe (12 caractères min.)", color = SamchatColors.Grey) },
+            placeholder = { Text(t("acc_pass_hint"), color = SamchatColors.Grey) },
             textStyle = TextStyle(fontSize = 16.sp),
             colors = accountFieldColors(),
             modifier = Modifier.fillMaxWidth()
@@ -134,10 +134,10 @@ fun AccountSection(context: Context) {
             colors = accountButtonColors(),
             onClick = {
                 if (motDePasse.length < AccountBackup.MIN_PASSWORD_LENGTH) {
-                    message = "Mot de passe trop court"
+                    message = t("acc_pass_short")
                 } else {
                     occupe = true
-                    message = "Création en cours…"
+                    message = t("acc_creating")
                     val mdp = motDePasse
                     Thread {
                         val resultat = try {
@@ -150,16 +150,16 @@ fun AccountSection(context: Context) {
                             if (resultat != null) {
                                 sauvegardeCreee = resultat
                                 motDePasse = ""
-                                message = "Sauvegarde créée : copie-la et garde-la hors du téléphone"
+                                message = t("acc_created")
                             } else {
-                                message = "Échec de la sauvegarde"
+                                message = t("acc_create_fail")
                             }
                         }
                     }.start()
                 }
             },
             modifier = Modifier.fillMaxWidth().height(56.dp)
-        ) { Text("Sauvegarder le compte", fontSize = 16.sp) }
+        ) { Text(t("acc_save"), fontSize = 16.sp) }
 
         if (sauvegardeCreee.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
@@ -169,19 +169,19 @@ fun AccountSection(context: Context) {
                 colors = accountButtonColors(),
                 onClick = {
                     copySensitive(context, sauvegardeCreee)
-                    message = "Sauvegarde copiée"
+                    message = t("acc_copied")
                 },
                 modifier = Modifier.fillMaxWidth().height(56.dp)
-            ) { Text("Copier la sauvegarde", fontSize = 16.sp) }
+            ) { Text(t("acc_copy"), fontSize = 16.sp) }
         }
 
         Spacer(Modifier.height(16.dp))
-        Text("Restaurer un compte", color = SamchatColors.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+        Text(t("acc_restore_title"), color = SamchatColors.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         TextField(
             value = aRestaurer,
             onValueChange = { aRestaurer = it },
-            placeholder = { Text("Colle la sauvegarde ici", color = SamchatColors.Grey) },
+            placeholder = { Text(t("acc_paste_hint"), color = SamchatColors.Grey) },
             textStyle = TextStyle(fontSize = 12.sp),
             colors = accountFieldColors(),
             modifier = Modifier.fillMaxWidth()
@@ -192,7 +192,7 @@ fun AccountSection(context: Context) {
             onValueChange = { motDePasseRestauration = it },
             singleLine = true,
             visualTransformation = PasswordVisualTransformation(),
-            placeholder = { Text("Mot de passe de la sauvegarde", color = SamchatColors.Grey) },
+            placeholder = { Text(t("acc_pass_restore_hint"), color = SamchatColors.Grey) },
             textStyle = TextStyle(fontSize = 16.sp),
             colors = accountFieldColors(),
             modifier = Modifier.fillMaxWidth()
@@ -203,7 +203,7 @@ fun AccountSection(context: Context) {
             colors = accountButtonColors(),
             onClick = { confirmer = true },
             modifier = Modifier.fillMaxWidth().height(56.dp)
-        ) { Text("Restaurer le compte", fontSize = 16.sp) }
+        ) { Text(t("acc_restore"), fontSize = 16.sp) }
 
         if (message.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))

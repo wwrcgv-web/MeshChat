@@ -42,14 +42,14 @@ fun TermsScreen(onAccept: () -> Unit) {
     Surface(modifier = Modifier.fillMaxSize(), color = SamchatColors.Background) {
         Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
             Text(
-                "Bienvenue dans Samchat",
+                t("terms_title"),
                 color = SamchatColors.Green,
                 fontSize = 24.sp,
                 fontWeight = FontWeight.Bold
             )
             Spacer(Modifier.height(4.dp))
             Text(
-                "À lire avant de commencer",
+                t("terms_sub"),
                 color = SamchatColors.Grey,
                 fontSize = 13.sp
             )
@@ -64,37 +64,31 @@ fun TermsScreen(onAccept: () -> Unit) {
                     .verticalScroll(rememberScrollState())
             ) {
                 Clause(
-                    "Chiffrement de bout en bout",
-                    "Tes messages, photos et vocaux sont chiffrés sur ton téléphone avant de partir. " +
-                        "Aucun téléphone intermédiaire, aucun serveur ne peut lire le contenu."
+                    t("terms_c1_t"),
+                    t("terms_c1_x")
                 )
                 Clause(
-                    "Réseau maillé",
-                    "Sans réseau, tes messages peuvent transiter par d'autres téléphones à portée. " +
-                        "Ils ne voient que du contenu chiffré ; ta position n'est pas partagée."
+                    t("terms_c2_t"),
+                    t("terms_c2_x")
                 )
                 Clause(
-                    "Mode « Avec Internet »",
-                    "Si tu l'actives, le contenu chiffré est déposé sur un relais. Le relais voit l'heure " +
-                        "et un identifiant haché du destinataire — jamais le texte en clair."
+                    t("terms_c3_t"),
+                    t("terms_c3_x")
                 )
                 Clause(
-                    "Ta clé t'appartient",
-                    "La clé privée reste dans le téléphone et n'est pas sauvegardée. Désinstaller " +
-                        "l'application ou perdre le téléphone efface définitivement ton compte et tes contacts."
+                    t("terms_c4_t"),
+                    t("terms_c4_x")
                 )
                 Clause(
-                    "Données minimales",
-                    "Pas de compte à créer, pas de publicité, pas de suivi. Le pseudo, les contacts et " +
-                        "l'historique restent sur ton appareil."
+                    t("terms_c5_t"),
+                    t("terms_c5_x")
                 )
                 Clause(
-                    "Responsabilité",
-                    "Samchat est fourni « en l'état », sans garantie de livraison ni de disponibilité. " +
-                        "Tu l'utilises sous ta responsabilité et dans le respect des lois applicables."
+                    t("terms_c6_t"),
+                    t("terms_c6_x")
                 )
                 Text(
-                    "Tu peux arrêter à tout moment en désinstallant l'application.",
+                    t("terms_footer"),
                     color = SamchatColors.Grey,
                     fontSize = 12.sp
                 )
@@ -114,7 +108,7 @@ fun TermsScreen(onAccept: () -> Unit) {
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "J'ai lu et j'accepte les Conditions d'Utilisation et la Politique de Confidentialité",
+                    t("terms_check"),
                     color = SamchatColors.White,
                     fontSize = 13.sp
                 )
@@ -134,7 +128,7 @@ fun TermsScreen(onAccept: () -> Unit) {
                     disabledContentColor = SamchatColors.Grey
                 )
             ) {
-                Text("Commencer", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(t("terms_start"), fontSize = 16.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
