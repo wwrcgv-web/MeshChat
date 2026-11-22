@@ -1077,7 +1077,7 @@ private fun MeshHome(
                 Column(Modifier.verticalScroll(rememberScrollState())) {
                     Text("${t("dbg_peers")} : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("${t("dbg_contacts")} : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Service : ${if (AppState.serviceOn) t("active") else t("stopped")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_service")} : ${if (AppState.serviceOn) t("active") else t("stopped")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("${t("dbg_received")} : ${counts["in_text"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("${t("dbg_sent")} : ${counts["out_ok"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("${t("dbg_fail")} : ${counts["fail"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
