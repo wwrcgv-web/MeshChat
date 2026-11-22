@@ -45,13 +45,6 @@ object RelayChunks {
         return Morceau(fileId, numero, total, Base64.encodeToString(chiffre, Base64.NO_WRAP))
     }
 
-    /** Découpe un fichier en morceaux chiffrés (pour les petits fichiers). */
-    fun decouper(donnees: ByteArray, type: String, cle: SecretKey): List<Morceau> {
-        val fileId = nouvelId()
-        val total = nombreDeMorceaux(donnees.size)
-        return (1..total).map { morceau(donnees, type, cle, fileId, it, total) }
-    }
-
     /** Un morceau relevé et déchiffré. */
     data class MorceauRecu(val fileId: String, val numero: Int, val total: Int, val type: String, val bloc: ByteArray)
 

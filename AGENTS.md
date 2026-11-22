@@ -218,8 +218,7 @@ Côté app :
 
 ### Écran Réseau (compte et QR) — `NetworkScreen.kt`, `HomeUi.kt`, `MainActivity.kt`
 - Nouvel onglet Contacts : fond clair (`#F4F8F5`), cartes blanches, texte foncé — lisible en
-  plein soleil. Carte « Mon compte » avec un gros bouton vert « Afficher mon QR code » (56 dp)
-  et « Scanner un QR code » ; section Contacts nettement séparée.
+  plein soleil. Carte « Mon compte » cliquable ; section Contacts nettement séparée.
 - Icône QR (`ic_qr.xml`) ajoutée en haut à droite de la barre d'accueil sur cet onglet.
 - Écran QR dédié (`QrScreen.kt`) en deux onglets : « Mon QR code » (phrase verte, QR 270 dp sur
   blanc, pseudo en gras) et « Scanner » (caméra plein écran avec cadre, démarrée seulement sur
