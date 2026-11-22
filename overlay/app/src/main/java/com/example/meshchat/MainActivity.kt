@@ -67,6 +67,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.service.MeshService
+import com.example.meshchat.service.RelayService
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.delay
@@ -235,6 +236,8 @@ class MainActivity : ComponentActivity() {
         // Annuaire et historique disponibles même sans service Bluetooth :
         // l'envoi par Internet ne doit pas dépendre du Bluetooth
         MeshState.attach(this)
+        // Relais Internet : service séparé, il ne dépend pas du Bluetooth
+        RelayService.start(this)
         setContent {
             MeshHome(
                 onStart = { askPermissions() },
@@ -248,7 +251,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
-        // Relève immédiate : le message s'affiche sans attendre le tour de 5 secondes
+        // Écran visible : relève rapide (5 s) et tout de suite, sans attendre le tour suivant
+        RelayPoll.setAppVisible(true)
         RelayPoll.requestNow()
     }
 
@@ -263,6 +267,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
+        // Écran fermé : la relève se calme (30 s) pour ménager la batterie
+        RelayPoll.setAppVisible(false)
         BleMeshManager.instance?.openChatPeer = null
         if (!AppState.runInBackground && AppState.serviceOn) stopMeshService()
     }

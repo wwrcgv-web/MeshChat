@@ -9,6 +9,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -28,6 +29,8 @@
             android:screenOrientation="portrait"
             tools:replace="android:screenOrientation" />
         <service android:name=".service.MeshService" android:foregroundServiceType="connectedDevice" android:exported="false" />
+        <!-- Relais Internet : sans aucune permission Bluetooth, indépendant du maillage local -->
+        <service android:name=".service.RelayService" android:foregroundServiceType="dataSync" android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

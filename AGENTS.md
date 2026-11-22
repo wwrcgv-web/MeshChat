@@ -84,8 +84,7 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - `MainActivity.onStart()` appelle `requestNow()` : un message déjà sur le relais s'affiche
   dès le retour à l'écran, sans intervention de l'utilisateur.
 - Le sondeur reste **unique et dans le service** : pas de second boucleur dans l'Activity.
-- **Non fait volontairement** : cadence adaptative (5 s au premier plan / 30–60 s écran éteint)
-  et long-poll côté Worker — à décider plus tard.
+- Cadence adaptative : faite au Lot B (ci-dessous). Long-poll côté Worker : toujours à décider.
 
 ### 4. Envoi refusé quand le service est arrêté — `MainActivity.kt`
 - Branche Internet de `send()` : ne teste pas `BleMeshManager.instance` → part sans service.
@@ -97,13 +96,17 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   `MainActivity.onCreate` ; `refresh()` retombe sur `LocalIdentity.knownContacts()` et sur
   les préférences quand `BleMeshManager.instance` est absent. → conversations et historique
   disponibles service Bluetooth coupé ; l'envoi Internet n'est plus bloqué par l'annuaire vide.
-- **Lot B (à faire)** : extraire `RelayPoll` dans un `service/RelayService.kt` dédié
-  (`foregroundServiceType="dataSync"`), indépendant du BLE ; `MeshService` ne garde que le BLE.
-  Contraintes : démarrage depuis une Activity visible (Android 12+), permission
-  `FOREGROUND_SERVICE_DATA_SYNC` (Android 14), un seul `RelayPoll.start()`.
+- **Lot B (appliqué 22/11/2026)** : `service/RelayService.kt` (foreground, `dataSync`) possède
+  désormais `RelayPoll` ; `MeshService` ne garde que le BLE/Wi-Fi. Manifeste :
+  `FOREGROUND_SERVICE_DATA_SYNC` + déclaration du service. `MainActivity.onCreate` démarre
+  `RelayService` (indépendant du bouton BLE). Cadence adaptative : 5 s écran ouvert, 30 s en
+  arrière-plan, jusqu'à 60 s après échecs (`RelayPoll.setAppVisible`/`nextDelay`).
+  ⚠️ Android 15 plafonne les services `dataSync` à ~6 h/jour : à surveiller si on veut une
+  relève permanente ; alternative `specialUse` ou `connectedDevice` à décider plus tard.
 - **Lot C (à faire, avec la ligne 5)** : `RelayClient.isEnabled/setEnabled` réels, pour que
   « Sans Internet » coupe vraiment le relais.
-- Reste couplé tant que B n'est pas fait : réception et accusés (la relève tourne dans le service).
+- Après A + B : l'envoi, la réception et les accusés ne dépendent plus du service Bluetooth ;
+  seul le routage « mode Internet » reste décoratif tant que le Lot C n'est pas fait.
 
 ### 5. Jeton obligatoire — `RelayClient.kt`, `build.gradle.kts`
 - `token()` = `BuildConfig.RELAY_TOKEN` (variable d'env. à la compilation).

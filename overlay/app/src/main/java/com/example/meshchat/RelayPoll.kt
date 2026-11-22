@@ -13,7 +13,11 @@ import javax.crypto.SecretKey
 
 object RelayPoll {
 
-    private const val PERIOD_MS = 5_000L
+    /** Relève rapide quand l'écran est ouvert, lente quand l'app est en arrière-plan. */
+    private const val PERIOD_FOREGROUND_MS = 5_000L
+    private const val PERIOD_BACKGROUND_MS = 30_000L
+    /** Plafond du ralentissement après plusieurs échecs de relève. */
+    private const val PERIOD_MAX_MS = 60_000L
     private const val MAX_PROCESSED_IDS = 5_000
     private const val MAX_PENDING_FILES = 20
     private const val MAX_CHUNKS = 250
@@ -62,8 +66,13 @@ object RelayPoll {
     @Volatile private var resultHandler: ((RelayResult) -> Unit)? = null
     /** Vrai pendant une relève : deux relèves ne tournent jamais en même temps. */
     private val polling = AtomicBoolean(false)
+    /** Écran ouvert : relève toutes les 5 s ; sinon 30 s, pour ménager la batterie. */
+    @Volatile private var appVisible = false
 
-    /** Démarre la relève toutes les 5 secondes. Remplace une relève déjà en cours. */
+    /**
+     * Démarre la relève : 5 s quand l'écran est ouvert, 30 s en arrière-plan (voir [setAppVisible]).
+     * Remplace une relève déjà en cours.
+     */
     fun start(scope: CoroutineScope, context: Context, onResult: (RelayResult) -> Unit) {
         stop()
         val app = context.applicationContext
@@ -71,17 +80,36 @@ object RelayPoll {
         appContext = app
         resultHandler = onResult
         pollJob = scope.launch(Dispatchers.IO) {
+            var failures = 0
             while (isActive) {
                 try {
                     pollOnce(app, onResult)
+                    failures = if (RelayClient.lastReleveCode in 200..299) 0 else failures + 1
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // Une erreur ne doit jamais arrêter la relève : on réessaie au prochain tour
+                    // Une erreur ne doit jamais arrêter la relève : on réessaie, plus tard
+                    failures += 1
                 }
-                delay(PERIOD_MS)
+                delay(nextDelay(failures))
             }
         }
+    }
+
+    /** L'écran est visible ou non : la relève s'accélère ou se calme en conséquence. */
+    fun setAppVisible(visible: Boolean) {
+        appVisible = visible
+    }
+
+    /**
+     * Délai avant le prochain tour : 5 s écran ouvert, 30 s en arrière-plan, et jusqu'à 60 s
+     * quand les relèves échouent (réseau coupé, jeton absent) pour ne pas insister pour rien.
+     */
+    private fun nextDelay(failures: Int): Long {
+        val base = if (appVisible) PERIOD_FOREGROUND_MS else PERIOD_BACKGROUND_MS
+        if (failures <= 0) return base
+        val factor = 1L shl minOf(failures, 3)
+        return minOf(base * factor, PERIOD_MAX_MS)
     }
 
     fun stop() {
