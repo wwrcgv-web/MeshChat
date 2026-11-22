@@ -10,9 +10,17 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
    encore dans la révision courante. Le rapport peut être en retard sur le code.
 3. **Aucune modification de code sans feu vert explicite.** On annonce d'abord les fichiers
    touchés et l'approche, on attend, puis on écrit.
-4. **Chaque correction a un test de vérification** (décrit ci-dessous) et un commit dédié.
-5. **Mettre à jour ce fichier** après chaque correction : statut + date + commit.
-6. Si le rapport et le code divergent, le signaler et corriger la fiche, pas le code.
+4. **Cohérence avant livraison** : relire le plan, le code et les tests ensemble ; s'ils se
+   contredisent, corriger avant de livrer.
+5. **Recalculer les chiffres** : poser le calcul (unité, fréquence, total) avant de l'annoncer.
+6. **Dire ce qui n'a pas été testé** : distinguer « compilé », « testé sur téléphone » et
+   « jamais exécuté ». Ne jamais écrire « fait » pour du code non vérifié.
+7. **Rien de destructeur sans accord** : SQL qui modifie ou supprime, déploiement, push, retrait
+   d'un secret → demander d'abord, avec un retour arrière écrit.
+8. **Secrets** : ne jamais afficher, copier ou stocker un jeton ou une clé. Après chaque push,
+   rappeler de révoquer le jeton.
+9. **Terminer chaque réponse** par : ce qui est fait, ce qui reste non vérifié, ce que
+   l'utilisateur a à faire — dans cet ordre.
 
 ## Ordre imposé
 
