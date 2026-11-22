@@ -17,6 +17,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 
+/** Groupe commun aux deux notifications (maillage local et relais Internet) : Android les regroupe. */
+internal const val SAMCHAT_NOTIF_GROUP = "samchat_services"
+
 /**
  * Service de premier plan du relais Internet.
  *
@@ -78,6 +81,7 @@ class RelayService : Service() {
             .setContentText("Relève du relais en cours")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentIntent(pending)
+            .setGroup(SAMCHAT_NOTIF_GROUP)
             .setOngoing(true)
             .build()
     }

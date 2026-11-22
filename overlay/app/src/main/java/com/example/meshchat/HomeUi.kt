@@ -24,6 +24,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.meshchat.ble.MeshPeer
+import com.example.meshchat.service.RelayService
 
 /** Couleurs de Samchat, en un seul endroit. Sombre, vert et blanc. */
 object SamchatColors {
@@ -185,6 +186,8 @@ fun ChatListScreen(
                 ModeSelector(internetOn = internetOn) { on ->
                     internetOn = on
                     RelayClient.setEnabled(context, on)
+                    // Le service de relève suit le mode : inutile de sonder quand Internet est coupé
+                    if (on) RelayService.start(context) else RelayService.stop(context)
                 }
                 Spacer(Modifier.height(8.dp))
                 TextField(

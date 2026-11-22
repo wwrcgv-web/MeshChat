@@ -21,8 +21,8 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 | 1 | Envoi Internet sur le fil principal | Corrigé, à tester | **Déjà corrigé** dans `MainActivity.kt` (threads) |
 | 2 | Trois relèves sur la même boîte | À faire (étape 2) | **Déjà corrigé + durci le 22/11/2026** (voir fiche 2) |
 | 3 | Messages relevés seulement au retour dans l'app | À faire (étape 3) | **Déjà corrigé + relève immédiate le 22/11/2026** (option A, voir fiche 3) |
-| 4 | Envoi refusé quand Samchat est arrêté | À faire | **Partiellement corrigé** : envoi OK, relève dépend du service |
-| 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel** : `BuildConfig.RELAY_TOKEN`, aucun écran de saisie |
+| 4 | Envoi refusé quand Samchat est arrêté | À faire | **Corrigé (lots A+B+C, 22/11/2026)** : envoi et relève indépendants du BLE |
+| 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel, terrain préparé** : `DeviceKey` prêt ; aucun champ jeton dans l'UI existante |
 | 6 | Faux accusés de réception acceptés | À faire | **Réel** : `handleAck` supprime avant d'authentifier |
 | 7 | APK de debug : mise à jour impossible | À faire | **Réel** : `assembleDebug` seulement, pas de signature fixe |
 
@@ -89,7 +89,6 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 ### 4. Envoi refusé quand le service est arrêté — `MainActivity.kt`
 - Branche Internet de `send()` : ne teste pas `BleMeshManager.instance` → part sans service.
 - La **relève** exige le service (elle y tourne).
-- **Verdict : partiellement corrigé** ; à repréciser avant de clore.
 
 **Plan validé en 3 lots** (A → B → C) :
 - **Lot A (appliqué 22/11/2026)** : `MeshState.attach()` idempotent, appelé depuis
@@ -103,16 +102,29 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   arrière-plan, jusqu'à 60 s après échecs (`RelayPoll.setAppVisible`/`nextDelay`).
   ⚠️ Android 15 plafonne les services `dataSync` à ~6 h/jour : à surveiller si on veut une
   relève permanente ; alternative `specialUse` ou `connectedDevice` à décider plus tard.
-- **Lot C (à faire, avec la ligne 5)** : `RelayClient.isEnabled/setEnabled` réels, pour que
-  « Sans Internet » coupe vraiment le relais.
-- Après A + B : l'envoi, la réception et les accusés ne dépendent plus du service Bluetooth ;
-  seul le routage « mode Internet » reste décoratif tant que le Lot C n'est pas fait.
+- **Lot C (appliqué 22/11/2026)** : `RelayClient.isEnabled/setEnabled` lisent/écrivent la
+  préférence `relay_on` (vrai par défaut) ; le sélecteur « Sans Internet » coupe vraiment le
+  relais et arrête `RelayService` ; `MainActivity` ne démarre le relais que si le mode est actif.
+  Notifications : groupe commun `samchat_services` posé sur les deux notifications. Pour un
+  vrai regroupement (une ligne au lieu de deux), il faudra ajouter une notification résumé
+  explicite : non fait, volontairement, pour ne pas complexifier maintenant.
+- **Verdict après A + B + C** : l'envoi, la réception et les accusés ne dépendent plus du
+  service Bluetooth, et le mode « Sans Internet » coupe réellement le relais.
+  Reste à valider sur téléphone ; pas de compilation locale possible.
 
-### 5. Jeton obligatoire — `RelayClient.kt`, `build.gradle.kts`
+### 5. Jeton obligatoire — `RelayClient.kt`, `build.gradle.kts`, `DeviceKey.kt`
 - `token()` = `BuildConfig.RELAY_TOKEN` (variable d'env. à la compilation).
-- `saveToken()` et `setEnabled()` sont vides ; l'interrupteur « Avec Internet » n'a aucun effet.
-- Jeton vide → `deposer()` échoue silencieusement, repli BLE.
-- **Verdict : réel.** Nécessite le code du Worker Cloudflare.
+- `saveToken()` reste vide ; **aucun écran ne demande de jeton** dans cette révision (le
+  rapport citait `SettingsHub.kt:573`, or ce fichier fait 534 lignes et ne parle que des
+  réglages de relais BLE). Il n'y a donc rien à masquer : le seul point d'entrée est le secret
+  de compilation.
+- **Terrain préparé le 22/11/2026** : `DeviceKey.kt` crée une clé EC P-256 de signature dans le
+  Keystore Android (alias `samchat_device_key`), expose `publicKeyHex()`, `deviceId()` et
+  `sign(data)`. **Volontairement non branché** : le Worker ne sait pas encore vérifier les
+  signatures, et `RelayClient` continue d'envoyer `X-App-Token`.
+- Prochaine étape (avec le code du Worker) : `/enregistrer` avec `publicKeyHex`, puis en-têtes
+  `X-Device-Id` + `X-Device-Signature` sur `/deposer` et `/relever`, et suppression du jeton.
+- **Verdict : réel**, en attente du Worker.
 
 ### 6. Faux accusés — `BleMeshManager.handleAck()`
 - Ordre actuel : `seenSecret.add` → `deliveredIds.add` → `store.remove` →

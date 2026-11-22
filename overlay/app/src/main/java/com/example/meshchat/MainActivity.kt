@@ -236,8 +236,8 @@ class MainActivity : ComponentActivity() {
         // Annuaire et historique disponibles même sans service Bluetooth :
         // l'envoi par Internet ne doit pas dépendre du Bluetooth
         MeshState.attach(this)
-        // Relais Internet : service séparé, il ne dépend pas du Bluetooth
-        RelayService.start(this)
+        // Relais Internet : service séparé, indépendant du Bluetooth, et soumis au mode choisi
+        if (RelayClient.isEnabled(this)) RelayService.start(this)
         setContent {
             MeshHome(
                 onStart = { askPermissions() },

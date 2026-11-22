@@ -218,6 +218,7 @@ class MeshService : Service() {
             .setContentText("Service Bluetooth en cours")
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
             .setContentIntent(pending)
+            .setGroup(SAMCHAT_NOTIF_GROUP)
             .setOngoing(true)
             .build()
     }

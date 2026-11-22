@@ -10,6 +10,9 @@ import java.net.URLEncoder
 object RelayClient {
     const val BASE_URL = "https://samchat-relais.wwrcgv.workers.dev"
     private const val TIMEOUT_MS = 10_000
+    private const val PREFS = "meshchat"
+    /** Drapeau du mode « Avec Internet ». Vrai par défaut, comme avant. */
+    private const val KEY_ENABLED = "relay_on"
 
     /** Raison du dernier échec d'envoi, affichée dans le journal pour le diagnostic. */
     @Volatile var lastError: String = ""
@@ -17,11 +20,14 @@ object RelayClient {
     /** Code HTTP de la dernière relève : 0 = pas encore de réponse, -1 = connexion impossible. */
     @Volatile var lastReleveCode: Int = 0
 
-    @Suppress("UNUSED_PARAMETER")
-    fun isEnabled(context: Context): Boolean = true
+    /** Interrupteur « Avec Internet » : persisté, et respecté par l'envoi comme par la relève. */
+    fun isEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_ENABLED, true)
 
-    @Suppress("UNUSED_PARAMETER")
     fun setEnabled(context: Context, on: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_ENABLED, on)
+            .apply()
     }
 
     @Suppress("UNUSED_PARAMETER")
