@@ -24,7 +24,7 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 | 4 | Envoi refusé quand Samchat est arrêté | À faire | **Corrigé (lots A+B+C, 22/11/2026)** : envoi et relève indépendants du BLE |
 | 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel, terrain préparé** : `DeviceKey` prêt ; aucun champ jeton dans l'UI existante |
 | 6 | Faux accusés de réception acceptés | À faire | **Corrigé le 22/11/2026** : authentification avant suppression |
-| 7 | APK de debug : mise à jour impossible | À faire | **Préparé le 22/11/2026** : release signée configurée, secrets GitHub à créer |
+| 7 | APK de debug : mise à jour impossible | À faire | **Fait et vérifié le 22/11/2026** : release signée, mise à jour par-dessus sans perte |
 
 ## Constat préalable (important)
 
@@ -150,7 +150,7 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - Défaut : `gradle assembleDebug` + upload de `apk/debug` → nouvelle clé de debug à chaque
   build, mise à jour impossible sans désinstaller (perte de l'identité et de l'historique).
 
-**Préparation appliquée le 22/11/2026** (non poussée) :
+**Appliqué et poussé le 22/11/2026** :
 - Keystore `samchat-release.p12` (RSA 4096, PKCS12, alias `samchat`, valide jusqu'en 2056)
   généré hors du dépôt (`/root/workspace/.keys/`, copie dans `/sdcard/Download/DSH-Go/keystore/`).
 - `.gitignore` : `*.p12`, `*.jks`, `*.keystore`, `*.b64`, `*.apk`, `build/`, `.gradle/`.
@@ -159,8 +159,9 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   dérivé de `GITHUB_RUN_NUMBER`, `versionName = 0.2.<run>`.
 - Workflow : décodage du secret `KEYSTORE_BASE64` dans `$RUNNER_TEMP`, `gradle assembleRelease`,
   échec explicite si l'APK sort non signée, upload de `apk/release`.
-- **Reste à faire (par l'utilisateur)** : créer les 4 secrets GitHub, puis pousser ; la première
-  release imposera une désinstallation aux testeurs de l'APK debug (signature différente).
+- Secrets GitHub créés par l'utilisateur ; build 45031434375 verte.
+- **Vérifié sur téléphone le 22/11/2026** : installation de la release signée **par-dessus** la
+  version précédente, sans perte de données ; `versionCode` dérivé du run GitHub.
 - ⚠️ Le mot de passe et le keystore ont transité par la conversation : à sauvegarder hors ligne,
   et à considérer comme exposés.
 
@@ -176,6 +177,8 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   préférences `meshchat`. Tant que ce n'est pas accepté : **aucun service, aucune permission,
   aucun attachement de `MeshState`**. `startAfterTerms()` regroupe ces démarrages.
 - Le texte est en français uniquement : la traduction (Strings.kt) reste à faire si besoin.
+- **Vérifié sur téléphone le 22/11/2026** : bouton grisé tant que la case n'est pas cochée,
+  permissions demandées seulement après acceptation, écran non réaffiché au lancement suivant.
 - ⚠️ Juridiquement, ceci n'est qu'un écran d'information : un vrai texte de CGU/politique de
   confidentialité doit être relu et hébergé (URL publique), et l'acceptation ne vaut pas
   consentement RGPD pour un traitement de données.
