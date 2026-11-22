@@ -183,6 +183,28 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   confidentialité doit être relu et hébergé (URL publique), et l'acceptation ne vaut pas
   consentement RGPD pour un traitement de données.
 
+## Relais v3 — appareil signé (22/11/2026)
+
+Worker v2.1 déployé (Supabase : `lu_le`, `expediteur_appareil`, table `appareils`, cron 4×/jour).
+Côté app :
+
+- `RelayDispatch.boiteDe(clePubliqueHex)` : boîte = `SHA-256("samchat-relais-v2:" + clé d'identité)`,
+  identique au Worker. L'ancienne boîte (`"samchat-relais:" + myId`) disparaît : ses messages
+  expirent en 24 h, aucun rattrapage n'est codé (décision assumée, testeur unique).
+- `RelayClient.assurerEnregistrement()` : inscrit l'appareil (`cle_identite`, `cle_publique`,
+  `boite`, `horodatage`, `signature_identite` = ECDSA de `boite\ncle_publique\nhorodatage`),
+  stocke `relay_device_id`. Lancé en tâche de fond au démarrage.
+- Requêtes signées (`X-Device-Id`, `X-Timestamp`, `X-Signature` en base64 de 64 octets r||s)
+  sur `/relever` (sans query) et `/confirmer`.
+- Repli automatique sur le jeton si `/relever` répond 401 (appareil inconnu, Worker injoignable).
+- `/deposer` conserve le jeton (exigence du Worker pendant la transition) et ajoute la signature
+  quand elle existe, pour que le Worker compte par appareil.
+- `RelayPoll` : lecture → traitement → `confirmer(ids)`. Un message non confirmé est relivré,
+  le dédoublonnage local évite l'affichage double : au pire un doublon, jamais une perte.
+- `DeviceKey.signRaw()` + `CryptoEngine.derToRaw()` : conversion DER → 64 octets pour WebCrypto.
+- `LocalIdentity.autoTestSignature()` au démarrage : journalise « Signature d'identité : OK »
+  ou le repli jeton (vérifie que le provider du téléphone signe bien avec la clé ECDH).
+
 ## Hors audit — interface (22/11/2026)
 
 ### Écran Discussions — `HomeUi.kt`, `Strings.kt`

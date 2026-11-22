@@ -276,6 +276,10 @@ class MainActivity : ComponentActivity() {
      */
     private fun startAfterTerms() {
         MeshState.attach(this)
+        RelayClient.attach(this)
+        // Inscription de l'appareil auprès du relais, hors du fil principal (réseau)
+        val appContext = applicationContext
+        Thread { RelayClient.assurerEnregistrement(appContext) }.start()
         // Sans signature ECDSA, l'enregistrement d'appareil serait voué à l'échec : on le dit tôt
         MeshState.addJournal(
             if (LocalIdentity.autoTestSignature(this)) "Signature d'identité : OK"
@@ -765,11 +769,12 @@ private fun MeshHome(
             val text = draft
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
 
-            if (target != null && key != null && RelayClient.isEnabled(context)) {
+            val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
+            if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
                 // Envoi par Internet : la requête part dans un autre fil, l'écran reste fluide
                 draft = ""
                 Thread {
-                    val relayId = RelayDispatch.envoyerParRelais(context, key, target, text)
+                    val relayId = RelayDispatch.envoyerParRelais(context, key, peerPub, text)
                     Handler(Looper.getMainLooper()).post {
                         if (relayId != null) {
                             MeshState.addBubble(
@@ -808,11 +813,12 @@ private fun MeshHome(
 
         pendingPhoto?.let { photo ->
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
-            if (target != null && key != null && RelayClient.isEnabled(context)) {
+            val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
+            if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
                 // Envoi par Internet : compression et dépôt dans un autre fil, l'écran reste fluide
                 pendingPhoto = null
                 Thread {
-                    val fileId = RelayFile.envoyer(context, key, target, compressPhoto(photo), "photo")
+                    val fileId = RelayFile.envoyer(context, key, peerPub, compressPhoto(photo), "photo")
                     Handler(Looper.getMainLooper()).post {
                         if (fileId != null) {
                             MeshState.addBubble(
@@ -864,11 +870,12 @@ private fun MeshHome(
         val manager = BleMeshManager.instance
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
+        val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
 
-        if (target != null && key != null && RelayClient.isEnabled(context)) {
+        if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
             // Envoi par Internet : hors du fil principal, l'écran reste fluide
             Thread {
-                val fileId = RelayFile.envoyer(context, key, target, bytes, "audio")
+                val fileId = RelayFile.envoyer(context, key, peerPub, bytes, "audio")
                 Handler(Looper.getMainLooper()).post {
                     if (fileId != null) {
                         val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")

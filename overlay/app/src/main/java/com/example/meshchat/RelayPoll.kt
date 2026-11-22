@@ -164,8 +164,8 @@ object RelayPoll {
      * qu'aucune clé ne déchiffre est écarté pour un moment au lieu d'être repris à chaque tour.
      */
     private suspend fun releverEtTraiter(context: Context, onResult: (RelayResult) -> Unit) {
-        val myHash = RelayDispatch.hacherDestinataire(LocalIdentity.myIdHex(context))
-        val messages = RelayClient.relever(context, myHash)
+        val boite = RelayClient.maBoite(context)
+        val messages = RelayClient.relever(context, boite)
         if (messages.isEmpty()) return
 
         // Les clés partagées sont calculées une seule fois par relève
@@ -174,11 +174,13 @@ object RelayPoll {
         }
         if (keys.isEmpty()) return
 
-        for (content in messages) {
-            val fp = empreinte(content)
+        val traites = ArrayList<String>(messages.size)
+        for (message in messages) {
+            traites.add(message.id)
+            val fp = empreinte(message.contenu)
             if (opaqueRecent(fp)) continue
             val encrypted = try {
-                Base64.decode(content, Base64.NO_WRAP)
+                Base64.decode(message.contenu, Base64.NO_WRAP)
             } catch (e: Exception) {
                 noteOpaque(fp)
                 continue
@@ -192,6 +194,9 @@ object RelayPoll {
             }
             if (!open) noteOpaque(fp)
         }
+        // Confirmation en dernier : un message non confirmé sera relivré au prochain tour,
+        // et le dédoublonnage local empêchera de l'afficher deux fois. Jamais de perte.
+        if (traites.isNotEmpty()) RelayClient.confirmer(context, traites)
     }
 
     private suspend fun processClear(context: Context, senderId: String, clear: ByteArray, key: SecretKey, onResult: (RelayResult) -> Unit) {
@@ -307,9 +312,10 @@ object RelayPoll {
     private fun depositAck(context: Context, recipientId: String, messageId: String, key: SecretKey): Boolean {
         if (!RelayClient.isEnabled(context)) return false
         return try {
+            val pub = LocalIdentity.peerPublicHex(context, recipientId) ?: return false
             val encrypted = CryptoEngine.encrypt((PREFIX_ACK + messageId).toByteArray(Charsets.UTF_8), key)
             val content = Base64.encodeToString(encrypted, Base64.NO_WRAP)
-            RelayClient.deposer(context, RelayDispatch.hacherDestinataire(recipientId), content)
+            RelayClient.deposer(context, RelayDispatch.boiteDe(pub), content)
         } catch (e: Exception) {
             false
         }

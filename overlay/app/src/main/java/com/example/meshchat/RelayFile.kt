@@ -16,10 +16,10 @@ object RelayFile {
 
     private const val ESSAIS_PAR_MORCEAU = 2
 
-    fun envoyer(context: Context, cleSecrete: SecretKey, destinataireId: String, donnees: ByteArray, type: String): String? {
+    fun envoyer(context: Context, cleSecrete: SecretKey, destinatairePubHex: String, donnees: ByteArray, type: String): String? {
         if (!RelayClient.isEnabled(context)) return null
         if (donnees.isEmpty()) return null
-        val destinataire = RelayDispatch.hacherDestinataire(destinataireId)
+        val destinataire = RelayDispatch.boiteDe(destinatairePubHex)
         val fileId = RelayChunks.nouvelId()
         val total = RelayChunks.nombreDeMorceaux(donnees.size)
         for (numero in 1..total) {

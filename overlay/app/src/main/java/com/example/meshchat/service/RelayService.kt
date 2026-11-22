@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import com.example.meshchat.MeshState
+import com.example.meshchat.RelayClient
 import com.example.meshchat.RelayPoll
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
@@ -34,6 +35,8 @@ class RelayService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        // Contexte du client, pour sa signature (le service peut tourner sans écran ouvert)
+        RelayClient.attach(this)
         // Mémoire de l'app : historique et annuaire, même si le service Bluetooth n'existe pas
         MeshState.attach(this)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
