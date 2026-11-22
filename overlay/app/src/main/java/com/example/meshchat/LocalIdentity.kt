@@ -8,6 +8,7 @@ import com.example.meshchat.crypto.CryptoEngine
 import com.example.meshchat.crypto.SecureKeys
 import java.security.KeyFactory
 import java.security.KeyPair
+import java.security.Signature
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.SecretKey
@@ -73,6 +74,48 @@ object LocalIdentity {
         val pair = CryptoEngine.newKeyPair()
         SecureKeys.savePair(context, pair.public.encoded.toHex(), pair.private.encoded)
         return pair
+    }
+
+    /** Clé publique d'identité de ce téléphone, en hexadécimal (SPKI DER). */
+    fun myPublicHex(context: Context): String = myKeyPair(context).public.encoded.toHex()
+
+    /** Clé publique d'un contact en hexadécimal, ou null s'il est inconnu. */
+    fun peerPublicHex(context: Context, peerId: String): String? =
+        prefs(context).getString(PREFIX_PEER_KEY + peerId, null)
+
+    /**
+     * Signe des données avec la clé d'identité et renvoie 64 octets r||s (format WebCrypto).
+     * Sert à prouver au relais que cette boîte appartient bien à cette identité.
+     */
+    fun signerAvecIdentite(context: Context, data: ByteArray): ByteArray? {
+        return try {
+            val signature = Signature.getInstance("SHA256withECDSA")
+            signature.initSign(myKeyPair(context).private)
+            signature.update(data)
+            CryptoEngine.derToRaw(signature.sign())
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Auto-test du provider : la clé d'identité signe-t-elle vraiment ? Certains téléphones
+     * pourraient refuser l'ECDSA sur une clé née pour l'ECDH ; on préfère le savoir au démarrage.
+     */
+    fun autoTestSignature(context: Context): Boolean {
+        return try {
+            val paire = myKeyPair(context)
+            val donnees = "samchat-selftest".toByteArray(Charsets.UTF_8)
+            val signature = Signature.getInstance("SHA256withECDSA")
+            signature.initSign(paire.private)
+            signature.update(donnees)
+            val sig = signature.sign()
+            signature.initVerify(paire.public)
+            signature.update(donnees)
+            signature.verify(sig)
+        } catch (e: Exception) {
+            false
+        }
     }
 
     /** Liste des contacts connus (clés publiques enregistrées). */

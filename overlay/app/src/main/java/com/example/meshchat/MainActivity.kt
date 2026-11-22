@@ -276,6 +276,11 @@ class MainActivity : ComponentActivity() {
      */
     private fun startAfterTerms() {
         MeshState.attach(this)
+        // Sans signature ECDSA, l'enregistrement d'appareil serait voué à l'échec : on le dit tôt
+        MeshState.addJournal(
+            if (LocalIdentity.autoTestSignature(this)) "Signature d'identité : OK"
+            else "Signature d'identité indisponible : repli sur le jeton"
+        )
         if (RelayClient.isEnabled(this)) RelayService.start(this)
         if (BleMeshManager.instance == null) askPermissions()
     }

@@ -1,6 +1,7 @@
 package com.example.meshchat
 
 import android.security.keystore.KeyGenParameterSpec
+import com.example.meshchat.crypto.CryptoEngine
 import android.security.keystore.KeyProperties
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -60,6 +61,12 @@ object DeviceKey {
         val public = keyPair()?.public?.encoded ?: return null
         val digest = MessageDigest.getInstance("SHA-256").digest(public)
         return digest.joinToString("") { "%02x".format(it) }.take(32)
+    }
+
+    /** Signature au format WebCrypto : 64 octets r||s. Null si le Keystore refuse. */
+    fun signRaw(data: ByteArray): ByteArray? {
+        val der = sign(data) ?: return null
+        return CryptoEngine.derToRaw(der)
     }
 
     /** Signe des données (SHA-256 + ECDSA) sans que la clé privée quitte le Keystore. */

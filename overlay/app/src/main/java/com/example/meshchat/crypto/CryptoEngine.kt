@@ -55,6 +55,41 @@ object CryptoEngine {
         return nonce + cipher.doFinal(plain)
     }
 
+    /**
+     * Convertit une signature ECDSA au format DER (ce que produit Android) en 64 octets
+     * r||s, format attendu par WebCrypto côté Worker. Null si la signature est mal formée.
+     */
+    fun derToRaw(der: ByteArray): ByteArray? {
+        return try {
+            var i = 0
+            if (der[i++] != 0x30.toByte()) return null
+            val len = der[i++].toInt() and 0xFF
+            if (len and 0x80 != 0) i += len and 0x7F
+            if (der[i++] != 0x02.toByte()) return null
+            val rLen = der[i++].toInt() and 0xFF
+            val r = der.copyOfRange(i, i + rLen)
+            i += rLen
+            if (der[i++] != 0x02.toByte()) return null
+            val sLen = der[i++].toInt() and 0xFF
+            val s = der.copyOfRange(i, i + sLen)
+            val out = ByteArray(64)
+            if (!poserEntier(r, out, 0)) return null
+            if (!poserEntier(s, out, 32)) return null
+            out
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Écrit un entier DER dans 32 octets, en retirant les zéros de tête. */
+    private fun poserEntier(src: ByteArray, dst: ByteArray, offset: Int): Boolean {
+        var s = src
+        while (s.size > 32 && s[0] == 0.toByte()) s = s.copyOfRange(1, s.size)
+        if (s.size > 32) return false
+        System.arraycopy(s, 0, dst, offset + (32 - s.size), s.size)
+        return true
+    }
+
     /** Déchiffre. Retourne null si les données sont altérées ou si la clé est fausse. */
     fun decrypt(data: ByteArray, key: SecretKey): ByteArray? {
         if (data.size < 12 + 16) return null
