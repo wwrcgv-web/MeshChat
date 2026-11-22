@@ -5,10 +5,12 @@ plugins {
 }
 
 android {
+    // Le namespace reste celui du code Kotlin : le renommer imposerait de déplacer tous les
+    // fichiers. Seul applicationId identifie l'app auprès du Play Store, et il est définitif.
     namespace = "com.example.meshchat"
     compileSdk = 35
     defaultConfig {
-        applicationId = "com.example.meshchat"
+        applicationId = "io.github.wwrcgv.samchat"
         minSdk = 26
         targetSdk = 35
         // Numéro de build GitHub : une mise à jour doit toujours avoir un versionCode supérieur

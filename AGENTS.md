@@ -186,8 +186,11 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 ## À traiter ensuite (non bloquant, hors ordre)
 
 - Base64 double sur les fichiers du relais (+78 %) et découpe mémoire dans `RelayChunks`.
-- Clé privée en clair (`my_priv`) : déjà migrée vers le Keystore par `SecureKeys`.
+- ~~Clé privée en clair (`my_priv`).~~ Périmé : `SecureKeys` migre déjà vers le Keystore.
 - Réserve (`MeshStore`, 500 entrées) : accepte tout message d'inconnu.
 - Scan BLE en `LOW_LATENCY` permanent.
 - Photo 1600 px / qualité 90 vs limite BLE 250 Ko.
-- Nom de paquet `com.example.meshchat` refusé par le Play Store.
+- ~~Nom de paquet `com.example.meshchat` refusé par le Play Store.~~ **Fait le 22/11/2026** :
+  `applicationId = io.github.wwrcgv.samchat` (namespace inchangé). Changement à pousser après
+  l'export QR de l'utilisateur : le nouvel identifiant crée une application distincte sur le
+  téléphone (données non transférées).
