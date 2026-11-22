@@ -16,6 +16,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.content.ContextCompat
 import com.example.meshchat.MeshState
 import com.example.meshchat.ble.BleMeshManager
@@ -74,6 +75,12 @@ class MeshService : Service() {
             IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED),
             ContextCompat.RECEIVER_NOT_EXPORTED
         )
+        ContextCompat.registerReceiver(
+            this,
+            screenWatcher,
+            IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) },
+            ContextCompat.RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -90,6 +97,8 @@ class MeshService : Service() {
         if (manager == null) {
             val m = BleMeshManager(this)
             manager = m
+            // Scan économe dès le départ si le service est lancé écran éteint
+            m.setScreenOn(screenInteractive())
             if (m.bleOn) {
                 m.startGattServer()
                 m.startAdvertising()
@@ -99,6 +108,23 @@ class MeshService : Service() {
         }
         return START_STICKY
     }
+
+    /**
+     * Suit l'écran : le scan BLE passe en mode économe quand il s'éteint, et redevient rapide
+     * à l'allumage (30 s), pour ne pas décharger la batterie ni rater un voisin qui arrive.
+     */
+    private val screenWatcher = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> manager?.setScreenOn(true)
+                Intent.ACTION_SCREEN_OFF -> manager?.setScreenOn(false)
+            }
+        }
+    }
+
+    /** État initial de l'écran, quand le service démarre écran éteint. */
+    private fun screenInteractive(): Boolean =
+        (getSystemService(Context.POWER_SERVICE) as PowerManager).isInteractive
 
     /** Le Bluetooth du téléphone vient de s'éteindre : on met la radio BLE en pause, sans rien oublier. */
     private fun onBluetoothOff() {
@@ -227,6 +253,7 @@ class MeshService : Service() {
         instance = null
         main.removeCallbacksAndMessages(null)
         try { unregisterReceiver(bluetoothWatcher) } catch (e: Exception) { }
+        try { unregisterReceiver(screenWatcher) } catch (e: Exception) { }
         prefs.unregisterOnSharedPreferenceChangeListener(prefListener)
         BleMeshManager.wifiSender = null
         val wd = direct

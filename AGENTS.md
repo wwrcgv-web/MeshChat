@@ -188,7 +188,13 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - Base64 double sur les fichiers du relais (+78 %) et découpe mémoire dans `RelayChunks`.
 - ~~Clé privée en clair (`my_priv`).~~ Périmé : `SecureKeys` migre déjà vers le Keystore.
 - Réserve (`MeshStore`, 500 entrées) : accepte tout message d'inconnu.
-- Scan BLE en `LOW_LATENCY` permanent.
+- ~~Scan BLE en `LOW_LATENCY` permanent.~~ **Fait le 22/11/2026** : scan adaptatif.
+  Écran éteint → `LOW_POWER` ; retour au premier plan ou allumage → 30 s de `LOW_LATENCY` ;
+  écran allumé sans pair → `LOW_LATENCY` ; sinon `BALANCED`. Signaux fournis par
+  `MeshService` (`ACTION_SCREEN_ON/OFF`) et `MainActivity.onStart/onStop`. Redémarrages du scan
+  espacés de 20 s (limite Android), le `sweeper` réévalue toutes les 5 s ; le scan n'est pas
+  relancé pendant un envoi si `PREF_SCAN_SEND` est faux. **À mesurer** : `dumpsys batterystats`
+  et délai de découverte dans les trois états.
 - Photo 1600 px / qualité 90 vs limite BLE 250 Ko.
 - ~~Nom de paquet `com.example.meshchat` refusé par le Play Store.~~ **Fait le 22/11/2026** :
   `applicationId = io.github.wwrcgv.samchat` (namespace inchangé). Changement à pousser après

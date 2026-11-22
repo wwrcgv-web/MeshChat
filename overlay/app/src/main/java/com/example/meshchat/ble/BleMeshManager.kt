@@ -109,6 +109,13 @@ class BleMeshManager(private val context: Context) {
     private var server: BluetoothGattServer? = null
     private var advertising = false
     @Volatile private var scanning = false
+    /** Écran allumé et app au premier plan : déterminent le mode de scan (batterie). */
+    @Volatile private var screenOn = true
+    @Volatile private var appVisible = false
+    @Volatile private var currentScanMode = ScanSettings.SCAN_MODE_LOW_LATENCY
+    /** Fin de la fenêtre de scan rapide après allumage de l'écran. */
+    @Volatile private var boostUntil = 0L
+    private var lastScanRestart = 0L
     @Volatile private var stopped = false
 
     private val bleExecutor = ThreadPoolExecutor(
@@ -182,6 +189,8 @@ class BleMeshManager(private val context: Context) {
         override fun run() {
             if (stopped) return
             sweepPeers()
+            // Le mode de scan est réévalué ici : fin de la fenêtre rapide, arrivée ou départ d'un pair
+            applyScanMode()
             val now = System.currentTimeMillis()
             if (now - lastRetryAt >= RETRY_TICK_MS) {
                 lastRetryAt = now
@@ -458,14 +467,16 @@ class BleMeshManager(private val context: Context) {
         if (startScanQuietly()) emit("Recherche de pairs...")
     }
 
-    private fun startScanQuietly(): Boolean {
+    private fun startScanQuietly(mode: Int = wantedScanMode()): Boolean {
         if (scanning || stopped || !bleOn) return false
         val scanner = adapter?.bluetoothLeScanner ?: return false
         val filter = ScanFilter.Builder().setServiceUuid(ParcelUuid(serviceUuid)).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        val settings = ScanSettings.Builder().setScanMode(mode).build()
         return try {
             scanner.startScan(listOf(filter), settings, scanCallback)
             scanning = true
+            currentScanMode = mode
+            lastScanRestart = System.currentTimeMillis()
             true
         } catch (e: SecurityException) {
             emit("Permission scan manquante")
@@ -477,6 +488,53 @@ class BleMeshManager(private val context: Context) {
         if (!scanning) return
         try { adapter?.bluetoothLeScanner?.stopScan(scanCallback) } catch (e: SecurityException) { Log.w(TAG, "Pause du scan impossible", e) }
         scanning = false
+    }
+
+    /** L'écran du téléphone vient de s'allumer ou de s'éteindre : le scan s'adapte. */
+    fun setScreenOn(on: Boolean) {
+        if (screenOn == on) return
+        screenOn = on
+        if (on) boostUntil = System.currentTimeMillis() + BOOST_MS
+        applyScanMode()
+    }
+
+    /** L'écran de l'app est visible ou non : même logique, pour éviter un scan inutile. */
+    fun setAppVisible(visible: Boolean) {
+        if (appVisible == visible) return
+        appVisible = visible
+        if (visible) boostUntil = System.currentTimeMillis() + BOOST_MS
+        applyScanMode()
+    }
+
+    /**
+     * Mode de scan souhaité, selon l'usage réel :
+     * écran éteint → LOW_POWER ; retour au premier plan → 30 s de LOW_LATENCY ;
+     * écran allumé sans pair → LOW_LATENCY ; sinon BALANCED.
+     */
+    private fun wantedScanMode(now: Long = System.currentTimeMillis()): Int = when {
+        !screenOn -> ScanSettings.SCAN_MODE_LOW_POWER
+        now < boostUntil -> ScanSettings.SCAN_MODE_LOW_LATENCY
+        !appVisible -> ScanSettings.SCAN_MODE_BALANCED
+        peers.isEmpty() -> ScanSettings.SCAN_MODE_LOW_LATENCY
+        else -> ScanSettings.SCAN_MODE_BALANCED
+    }
+
+    /**
+     * Applique le mode voulu s'il a changé. Android limite le nombre de démarrages de scan :
+     * on n'en redémarre pas plus d'un toutes les 20 s, le reste attend le tick du sweeper.
+     */
+    private fun applyScanMode() {
+        if (stopped || !bleOn) return
+        val wanted = wantedScanMode()
+        if (scanning && wanted == currentScanMode) return
+        if (scanning) {
+            if (System.currentTimeMillis() - lastScanRestart < SCAN_MODE_MIN_GAP_MS) return
+            pauseScan()
+        } else if (pendingJobs.get() > 0 && !prefs.getBoolean(PREF_SCAN_SEND, true)) {
+            // Envoi en cours et scan volontairement suspendu : on ne le relance pas ici
+            return
+        }
+        startScanQuietly(wanted)
     }
 
     fun startGattServer() {
@@ -1528,6 +1586,10 @@ class BleMeshManager(private val context: Context) {
         private const val MAX_HOLDINGS = 30
         private const val PEER_TIMEOUT_MS = 30_000L
         private const val SWEEP_MS = 5_000L
+        /** Pause minimale entre deux redémarrages du scan : Android limite les démarrages. */
+        private const val SCAN_MODE_MIN_GAP_MS = 20_000L
+        /** Durée du scan rapide après allumage de l'écran ou retour au premier plan. */
+        private const val BOOST_MS = 30_000L
         private const val MAX_ATTEMPTS = 3
         private const val RETRY_PAUSE_MS = 1_500L
         private const val TIMEOUT_BASE_MS = 20_000L

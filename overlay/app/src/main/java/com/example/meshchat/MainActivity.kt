@@ -285,6 +285,8 @@ class MainActivity : ComponentActivity() {
         // Écran visible : relève rapide (5 s) et tout de suite, sans attendre le tour suivant
         RelayPoll.setAppVisible(true)
         RelayPoll.requestNow()
+        // Scan BLE rapide le temps de retrouver les voisins, puis mode économe
+        BleMeshManager.instance?.setAppVisible(true)
     }
 
        override fun onResume() {
@@ -298,8 +300,9 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Écran fermé : la relève se calme (30 s) pour ménager la batterie
+        // Écran fermé : la relève se calme (30 s) et le scan BLE passe en mode économe
         RelayPoll.setAppVisible(false)
+        BleMeshManager.instance?.setAppVisible(false)
         BleMeshManager.instance?.openChatPeer = null
         if (!AppState.runInBackground && AppState.serviceOn) stopMeshService()
     }
