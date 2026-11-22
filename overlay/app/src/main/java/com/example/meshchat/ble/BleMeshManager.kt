@@ -1359,27 +1359,55 @@ class BleMeshManager(private val context: Context) {
         val ackId = body.copyOfRange(1, 1 + idSize)
         val confirmedId = body.copyOfRange(1 + idSize, header)
         val cipher = body.copyOfRange(header, body.size)
+        val confirmedHex = confirmedId.toHex()
+
+        // Rien n'est supprimé ni marqué « livré » tant que l'accusé n'est pas authentifié :
+        // il est déchiffré avec la clé partagée du contact, comme un message privé.
+        val opened = openAck(cipher)
+        if (opened == null) {
+            // Relais : on n'a pas la clé de cette conversation, donc on ne peut pas vérifier.
+            // On transmet sans rien toucher ; nos copies expireront d'elles-mêmes (keepHours).
+            relayAckIfNeeded(ttl, ackId, confirmedId, cipher, fromAddress)
+            return
+        }
+        // L'identifiant en clair doit être celui qui a été chiffré : sinon c'est un rejeu détourné
+        if (opened.second != confirmedHex) return
+        if (opened.first != KIND_RECEIVED && opened.first != KIND_READ) return
         if (!seenSecret.add(ackId.toHex())) return
 
+        // Dernier garde-fou : n'agir que sur un message réellement présent chez nous
+        if (!isLocallyKnown(confirmedHex)) {
+            relayAckIfNeeded(ttl, ackId, confirmedId, cipher, fromAddress)
+            return
+        }
+
         // Livré : on ne renvoie plus ce message, et les copies gardées ici peuvent disparaître
-        val confirmedHex = confirmedId.toHex()
         if (deliveredIds.size > MAX_SEEN_FRAGMENTS) deliveredIds.clear()
         deliveredIds.add(confirmedHex)
         store.remove(confirmedId)
         removeHolding(confirmedHex)
 
-        val opened = openAck(cipher)
-        if (opened != null) {
-            val label = if (opened.first == KIND_READ) "lu" else "reçu"
-            emit("Statut ${opened.second} $label")
-        }
+        val label = if (opened.first == KIND_READ) "lu" else "reçu"
+        emit("Statut ${opened.second} $label")
 
-        if (ttl > 1) {
-            val candidates = peers.values.filter { it.address != fromAddress }
-            val chosen = RelayConfig.pickNeighbors(candidates, RelayConfig.fanout(context))
-            val frame = byteArrayOf(TYPE_ACK, (ttl - 1).toByte()) + ackId + confirmedId + cipher
-            chosen.forEach { sendTo(it, frame) }
-        }
+        relayAckIfNeeded(ttl, ackId, confirmedId, cipher, fromAddress)
+    }
+
+    /** Vrai si ce message est encore chez nous : envoyé par nous, en réserve, ou gardé pour un pair. */
+    private fun isLocallyKnown(hex: String): Boolean {
+        if (hex in ownSent) return true
+        if (synchronized(holdings) { holdings.containsKey(hex) }) return true
+        return store.all().any { it.id.toHex() == hex }
+    }
+
+    /** Transmet un accusé aux voisins sans le vérifier : un relais n'a pas la clé de la conversation. */
+    private fun relayAckIfNeeded(ttl: Int, ackId: ByteArray, confirmedId: ByteArray, cipher: ByteArray, fromAddress: String) {
+        if (ttl <= 1) return
+        val candidates = peers.values.filter { it.address != fromAddress }
+        if (candidates.isEmpty()) return
+        val chosen = RelayConfig.pickNeighbors(candidates, RelayConfig.fanout(context))
+        val frame = byteArrayOf(TYPE_ACK, (ttl - 1).toByte()) + ackId + confirmedId + cipher
+        chosen.forEach { sendTo(it, frame) }
     }
 
     private fun openAck(cipher: ByteArray): Pair<Byte, String>? {

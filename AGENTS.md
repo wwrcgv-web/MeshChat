@@ -23,7 +23,7 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 | 3 | Messages relevés seulement au retour dans l'app | À faire (étape 3) | **Déjà corrigé + relève immédiate le 22/11/2026** (option A, voir fiche 3) |
 | 4 | Envoi refusé quand Samchat est arrêté | À faire | **Corrigé (lots A+B+C, 22/11/2026)** : envoi et relève indépendants du BLE |
 | 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel, terrain préparé** : `DeviceKey` prêt ; aucun champ jeton dans l'UI existante |
-| 6 | Faux accusés de réception acceptés | À faire | **Réel** : `handleAck` supprime avant d'authentifier |
+| 6 | Faux accusés de réception acceptés | À faire | **Corrigé le 22/11/2026** : authentification avant suppression |
 | 7 | APK de debug : mise à jour impossible | À faire | **Réel** : `assembleDebug` seulement, pas de signature fixe |
 
 ## Constat préalable (important)
@@ -127,10 +127,24 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - **Verdict : réel**, en attente du Worker.
 
 ### 6. Faux accusés — `BleMeshManager.handleAck()`
-- Ordre actuel : `seenSecret.add` → `deliveredIds.add` → `store.remove` →
-  `removeHolding` → **puis** `openAck()`.
-- Conséquence : un accusé non authentifié fait disparaître la copie gardée.
-- **Verdict : réel, confirmé.**
+- Défaut : `confirmedId` circule en clair ; `deliveredIds.add`, `store.remove` et
+  `removeHolding` s'exécutaient **avant** `openAck()`. Une trame forgée supprimait la copie
+  gardée, bloquait tout ré-envoi (`parcelsFor`), polluait `deliveredIds` et se relayait aux voisins.
+
+**Correction appliquée le 22/11/2026** — `BleMeshManager.kt` :
+1. Authentification d'abord : `openAck(cipher)` déchiffre avec la clé partagée du contact.
+   Échec → trame ignorée localement, simplement relayée (`relayAckIfNeeded`) : un relais n'a pas
+   la clé, mais il ne supprime plus rien.
+2. L'identifiant en clair doit être égal à celui contenu dans le chiffré (`opened.second`) :
+   bloque le rejeu détourné.
+3. Type d'accusé limité à `KIND_RECEIVED` / `KIND_READ`.
+4. Anti-rejeu (`seenSecret`) déplacé après authentification.
+5. `isLocallyKnown()` (défense en profondeur) : n'agit que si le message est chez nous
+   (`ownSent`, `holdings`, `store`).
+6. Le relais aveugle est conservé pour le multi-sauts ; les copies des relais expirent par
+   `keepHours` au lieu d'être effacées sur un faux accusé.
+- **À tester** : faux accusé (copie conservée), vrai accusé (statut + suppression), rejeu détourné
+  (ignoré).
 
 ### 7. APK de debug — `.github/workflows/main.yml`
 - `gradle assembleDebug`, `upload-artifact` du dossier `apk/debug`.
