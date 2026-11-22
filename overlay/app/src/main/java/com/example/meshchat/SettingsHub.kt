@@ -427,15 +427,15 @@ fun SettingsHub(
                             radioBle = on; prefs.edit().putBoolean("radio_ble", on).apply()
                             BleMeshManager.instance?.setBleEnabled(on)
                         }
-                        HubSwitch("Wi-Fi Aware", if (awareSupported) "Gros fichiers entre voisins." else "Non supporté.", radioAware, awareSupported) { on ->
+                        HubSwitch("Wi-Fi Aware", if (awareSupported) t("wifi_files") else t("not_supported"), radioAware, awareSupported) { on ->
                             radioAware = on; prefs.edit().putBoolean("radio_wifi_aware", on).apply()
                             MeshService.instance?.setWifiAwareEnabled(on)
                         }
-                        HubSwitch("Wi-Fi Direct", "Gros fichiers privés.", radioDirect) { on ->
+                        HubSwitch("Wi-Fi Direct", t("wifi_direct_hint"), radioDirect) { on ->
                             radioDirect = on; prefs.edit().putBoolean("radio_wifi_direct", on).apply()
                             MeshService.instance?.setWifiDirectEnabled(on)
                         }
-                        HubSwitch("Bluetooth longue portée", if (longSupported) "Plus loin, mais plus lent." else "Non supporté.", radioLong, longSupported) { on ->
+                        HubSwitch(t("long_range"), if (longSupported) t("long_range_hint") else t("not_supported"), radioLong, longSupported) { on ->
                             radioLong = on; prefs.edit().putBoolean("radio_long_range", on).apply()
                         }
                         Spacer(Modifier.height(16.dp))

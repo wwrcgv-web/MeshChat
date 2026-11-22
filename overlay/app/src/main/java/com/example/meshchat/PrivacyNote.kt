@@ -14,7 +14,7 @@ import androidx.compose.ui.unit.sp
 fun NoteConfidentialite() {
     Column(Modifier.fillMaxWidth()) {
         Text(
-            "CONFIDENTIALITÉ",
+            t("privacy_title"),
             color = SamchatColors.Green,
             fontSize = 13.sp,
             fontWeight = FontWeight.Bold,
@@ -29,8 +29,7 @@ fun NoteConfidentialite() {
         )
         Spacer(Modifier.height(8.dp))
         Text(
-            "Les messages publics (« Tous ») ne sont pas chiffrés de bout en bout. " +
-                "La sauvegarde du compte est protégée par ton mot de passe.",
+            t("privacy_public"),
             color = SamchatColors.Grey,
             fontSize = 13.sp
         )

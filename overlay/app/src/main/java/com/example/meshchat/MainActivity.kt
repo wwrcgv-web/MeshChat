@@ -995,13 +995,13 @@ private fun MeshHome(
     if (showBluetoothAsk && myName.isNotBlank()) {
         AlertDialog(
             onDismissRequest = { showBluetoothAsk = false },
-            title = { Text("Activer le Bluetooth") },
-            text = { Text("Le Bluetooth est nécessaire pour envoyer et recevoir les messages hors ligne, sans Internet.") },
+            title = { Text(t("bt_title")) },
+            text = { Text(t("bt_note")) },
             confirmButton = {
-                TextButton(onClick = { showBluetoothAsk = false; onEnableBluetooth() }) { Text("Activer", fontSize = 16.sp) }
+                TextButton(onClick = { showBluetoothAsk = false; onEnableBluetooth() }) { Text(t("bt_enable"), fontSize = 16.sp) }
             },
             dismissButton = {
-                TextButton(onClick = { showBluetoothAsk = false }) { Text("Plus tard", fontSize = 16.sp) }
+                TextButton(onClick = { showBluetoothAsk = false }) { Text(t("bt_later"), fontSize = 16.sp) }
             }
         )
     }
@@ -1072,23 +1072,23 @@ private fun MeshHome(
     if (showDebug) {
         AlertDialog(
             onDismissRequest = { showDebug = false },
-            title = { Text("Outils de debug", fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
+            title = { Text(t("dbg_title"), fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold) },
             text = {
                 Column(Modifier.verticalScroll(rememberScrollState())) {
-                    Text("Pairs vus : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Contacts : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_peers")} : ${peers.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_contacts")} : ${contacts.size}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Text("Service : ${if (AppState.serviceOn) t("active") else t("stopped")}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Messages reçus : ${counts["in_text"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Envois réussis : ${counts["out_ok"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
-                    Text("Échecs : ${counts["fail"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_received")} : ${counts["in_text"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_sent")} : ${counts["out_ok"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
+                    Text("${t("dbg_fail")} : ${counts["fail"] ?: 0}", fontFamily = FontFamily.Monospace, fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
-                    Text("Version : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text("${t("dbg_version")} : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     Text(dist.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
-                    TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) { Text("Copier l'empreinte", fontSize = 14.sp) }
+                    TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) { Text(t("dbg_copy"), fontSize = 14.sp) }
                 }
             },
             confirmButton = { TextButton(onClick = { showDebug = false }) { Text(t("close"), fontSize = 16.sp) } },
-            dismissButton = { TextButton(onClick = { MeshState.counts.clear() }) { Text("Remettre à zéro", fontSize = 16.sp) } }
+            dismissButton = { TextButton(onClick = { MeshState.counts.clear() }) { Text(t("dbg_reset"), fontSize = 16.sp) } }
         )
     }
 
