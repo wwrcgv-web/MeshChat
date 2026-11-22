@@ -200,6 +200,12 @@ object RelayPoll {
     }
 
     private suspend fun processClear(context: Context, senderId: String, clear: ByteArray, key: SecretKey, onResult: (RelayResult) -> Unit) {
+        // Morceau de fichier au format binaire : les octets bruts ne survivraient pas à un
+        // décodage UTF-8, on les traite directement.
+        if (estMorceauBinaire(clear)) {
+            processMorceauBinaire(context, senderId, clear, key, onResult)
+            return
+        }
         val text = String(clear, Charsets.UTF_8)
         when (classer(text)) {
             Kind.TEXTE -> processText(context, senderId, text, key, onResult)
@@ -207,6 +213,54 @@ object RelayPoll {
             Kind.ACCUSE -> processAck(text, onResult)
             Kind.INCONNU -> Unit
         }
+    }
+
+    /** Vrai si ces octets commencent par le préfixe binaire « CH2: ». */
+    private fun estMorceauBinaire(clear: ByteArray): Boolean {
+        val prefixe = RelayChunks.PREFIXE_BINAIRE.toByteArray(Charsets.UTF_8)
+        if (clear.size < prefixe.size) return false
+        for (i in prefixe.indices) if (clear[i] != prefixe[i]) return false
+        return true
+    }
+
+    /**
+     * Traite un morceau de fichier au format binaire : en-tête ASCII suivi des octets bruts.
+     * Le seul Base64 est celui du transport JSON, d'où ~25 % de données en moins qu'avant.
+     */
+    private suspend fun processMorceauBinaire(
+        context: Context,
+        senderId: String,
+        clear: ByteArray,
+        key: SecretKey,
+        onResult: (RelayResult) -> Unit
+    ) {
+        val prefixe = RelayChunks.PREFIXE_BINAIRE.toByteArray(Charsets.UTF_8)
+        var i = prefixe.size
+        var debut = i
+        var n = 0
+        val champs = arrayOfNulls<String>(4)
+        while (i < clear.size && n < 4) {
+            if (clear[i] == '|'.code.toByte()) {
+                champs[n] = String(clear, debut, i - debut, Charsets.UTF_8)
+                n++
+                debut = i + 1
+            }
+            i++
+        }
+        if (n < 4) return
+
+        val fileId = champs[0] ?: return
+        val numero = champs[1]?.toIntOrNull() ?: return
+        val total = champs[2]?.toIntOrNull() ?: return
+        val type = champs[3] ?: return
+        if (!ID_PATTERN.matches(fileId)) return
+        if (total < 1 || total > MAX_CHUNKS || numero < 1 || numero > total) return
+        if (type !in ALLOWED_TYPES) return
+
+        val morceau = RelayChunks.MorceauRecu(fileId, numero, total, type, clear.copyOfRange(debut, clear.size))
+        val data = storeChunk(morceau) ?: return
+        withContext(Dispatchers.IO) { depositAck(context, senderId, morceau.fileId, key) }
+        withContext(Dispatchers.Main) { onResult(RelayResult.File(senderId, morceau.type, data)) }
     }
 
     /** Type d'un contenu déchiffré, d'après son préfixe. Fonction pure, vérifiable seule. */

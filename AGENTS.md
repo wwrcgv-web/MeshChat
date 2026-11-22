@@ -236,7 +236,10 @@ Côté app :
 
 ## À traiter ensuite (non bloquant, hors ordre)
 
-- Base64 double sur les fichiers du relais (+78 %) et découpe mémoire dans `RelayChunks`.
+- ~~Base64 double sur les fichiers du relais.~~ **Fait le 22/11/2026** : format `CH2:` =
+  en-tête ASCII + octets bruts, un seul Base64 (celui du transport). ~25 % de données en moins
+  par morceau. L'ancien `CH:` (Base64 interne) reste décodé pour les morceaux déjà en vol.
+  `lireMorceau()` et `reassembler()`, inutilisés, ont été supprimés.
 - ~~Clé privée en clair (`my_priv`).~~ Périmé : `SecureKeys` migre déjà vers le Keystore.
 - Réserve (`MeshStore`, 500 entrées) : accepte tout message d'inconnu.
 - ~~Scan BLE en `LOW_LATENCY` permanent.~~ **Fait le 22/11/2026** : scan adaptatif.
