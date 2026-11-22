@@ -243,6 +243,12 @@ class MainActivity : ComponentActivity() {
         if (BleMeshManager.instance == null) askPermissions()
     }
 
+    override fun onStart() {
+        super.onStart()
+        // Relève immédiate : le message s'affiche sans attendre le tour de 5 secondes
+        RelayPoll.requestNow()
+    }
+
        override fun onResume() {
         super.onResume()
         Lang.load(this)

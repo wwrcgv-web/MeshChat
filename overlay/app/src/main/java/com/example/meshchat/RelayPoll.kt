@@ -8,6 +8,7 @@ import org.json.JSONArray
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.SecretKey
 
 object RelayPoll {
@@ -55,10 +56,20 @@ object RelayPoll {
     @Volatile private var processedDirty = false
     private var pollJob: Job? = null
 
+    /** Portée et callback du service, gardés pour pouvoir déclencher une relève immédiate. */
+    private var scope: CoroutineScope? = null
+    private var appContext: Context? = null
+    @Volatile private var resultHandler: ((RelayResult) -> Unit)? = null
+    /** Vrai pendant une relève : deux relèves ne tournent jamais en même temps. */
+    private val polling = AtomicBoolean(false)
+
     /** Démarre la relève toutes les 5 secondes. Remplace une relève déjà en cours. */
     fun start(scope: CoroutineScope, context: Context, onResult: (RelayResult) -> Unit) {
         stop()
         val app = context.applicationContext
+        this.scope = scope
+        appContext = app
+        resultHandler = onResult
         pollJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
@@ -76,17 +87,46 @@ object RelayPoll {
     fun stop() {
         pollJob?.cancel()
         pollJob = null
+        scope = null
+        appContext = null
+        resultHandler = null
+    }
+
+    /**
+     * Demande une relève tout de suite, sans attendre le tour de 5 secondes.
+     * Appelé quand l'écran revient au premier plan. Sans effet si le service ne fait pas tourner
+     * la relève ; une relève déjà en cours n'est jamais doublée (voir [pollOnce]).
+     */
+    fun requestNow() {
+        val s = scope ?: return
+        val context = appContext ?: return
+        val handler = resultHandler ?: return
+        s.launch(Dispatchers.IO) {
+            try {
+                pollOnce(context, handler)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Relève à la demande : un échec ne casse rien, la boucle réessaiera
+            }
+        }
     }
 
     suspend fun pollOnce(context: Context, onResult: (RelayResult) -> Unit) {
-        withContext(Dispatchers.IO) {
-            if (!RelayClient.isEnabled(context)) return@withContext
-            ensureLoaded(context)
-            try {
-                releverEtTraiter(context, onResult)
-            } finally {
-                persistProcessed()
+        // Deux relèves ne doivent jamais s'exécuter en même temps sur la même boîte
+        if (!polling.compareAndSet(false, true)) return
+        try {
+            withContext(Dispatchers.IO) {
+                if (!RelayClient.isEnabled(context)) return@withContext
+                ensureLoaded(context)
+                try {
+                    releverEtTraiter(context, onResult)
+                } finally {
+                    persistProcessed()
+                }
             }
+        } finally {
+            polling.set(false)
         }
     }
 

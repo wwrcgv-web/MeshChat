@@ -20,7 +20,7 @@ Dépôt analysé : `wwrcgv-web/MeshChat`, commit `1451985`.
 |---|---|---|---|
 | 1 | Envoi Internet sur le fil principal | Corrigé, à tester | **Déjà corrigé** dans `MainActivity.kt` (threads) |
 | 2 | Trois relèves sur la même boîte | À faire (étape 2) | **Déjà corrigé + durci le 22/11/2026** (voir fiche 2) |
-| 3 | Messages relevés seulement au retour dans l'app | À faire (étape 3) | **Déjà corrigé** : relève toutes les 5 s dans `MeshService` |
+| 3 | Messages relevés seulement au retour dans l'app | À faire (étape 3) | **Déjà corrigé + relève immédiate le 22/11/2026** (option A, voir fiche 3) |
 | 4 | Envoi refusé quand Samchat est arrêté | À faire | **Partiellement corrigé** : envoi OK, relève dépend du service |
 | 5 | Jeton obligatoire pour les non-scolarisés | À faire (Worker requis) | **Réel** : `BuildConfig.RELAY_TOKEN`, aucun écran de saisie |
 | 6 | Faux accusés de réception acceptés | À faire | **Réel** : `handleAck` supprime avant d'authentifier |
@@ -56,7 +56,7 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   (5 000 entrées) → doublons après redémarrage du service ; et un contenu indéchiffrable
   n'est jamais marqué traité → il est re-relevé à chaque tour.
 
-**Correction appliquée le 22/11/2026** (commit : à faire) — `RelayPoll.kt`, `RelayClient.kt` :
+**Correction appliquée le 22/11/2026** (commit `0ff975c`) — `RelayPoll.kt`, `RelayClient.kt` :
 1. `processedIds` sauvegardés dans `filesDir/relay_processed.json` (écriture après chaque relève,
    `processedDirty` ; en cas d'échec d'écriture la liste reste sale et sera réessayée).
 2. Contenu indéchiffrable : empreinte SHA-256 gardée 30 min (`opaqueSeen`, 500 max) →
@@ -75,6 +75,17 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
 - `RelayPoll.start(relayScope, ...)` à `onCreate` : relève permanente, écran éteint ou non.
 - `onResume()` ne fait que recharger la langue.
 - **Verdict : corrigé.**
+
+**Correction appliquée le 22/11/2026 (option A)** — `RelayPoll.kt`, `MainActivity.kt` :
+- `RelayPoll.requestNow()` : relève immédiate, sans attendre le tour de 5 s. Sans effet si le
+  service ne fait pas tourner la relève.
+- Garde `AtomicBoolean polling` dans `pollOnce` : deux relèves ne se superposent jamais,
+  même si l'écran et la boucle se déclenchent en même temps.
+- `MainActivity.onStart()` appelle `requestNow()` : un message déjà sur le relais s'affiche
+  dès le retour à l'écran, sans intervention de l'utilisateur.
+- Le sondeur reste **unique et dans le service** : pas de second boucleur dans l'Activity.
+- **Non fait volontairement** : cadence adaptative (5 s au premier plan / 30–60 s écran éteint)
+  et long-poll côté Worker — à décider plus tard.
 
 ### 4. Envoi refusé quand le service est arrêté — `MainActivity.kt`
 - Branche Internet de `send()` : ne teste pas `BleMeshManager.instance` → part sans service.
