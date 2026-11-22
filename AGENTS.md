@@ -165,6 +165,21 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   et à considérer comme exposés.
 
 
+## Hors audit — conformité (22/11/2026)
+
+### Écran d'acceptation des CGU au premier lancement — `TermsScreen.kt`, `MainActivity.kt`
+- `TermsScreen` : plein écran, texte défilant en 6 clauses (chiffrement de bout en bout, réseau
+  maillé, mode Internet et identifiant haché, clé privée non sauvegardée = perte du compte,
+  données minimales, absence de garantie), case à cocher obligatoire, bouton « Commencer »
+  désactivé tant que la case n'est pas cochée.
+- `MainActivity` : `cgv_accepted` (booléen) + `cgv_accepted_at` (horodatage) dans les
+  préférences `meshchat`. Tant que ce n'est pas accepté : **aucun service, aucune permission,
+  aucun attachement de `MeshState`**. `startAfterTerms()` regroupe ces démarrages.
+- Le texte est en français uniquement : la traduction (Strings.kt) reste à faire si besoin.
+- ⚠️ Juridiquement, ceci n'est qu'un écran d'information : un vrai texte de CGU/politique de
+  confidentialité doit être relu et hébergé (URL publique), et l'acceptation ne vaut pas
+  consentement RGPD pour un traitement de données.
+
 ## À traiter ensuite (non bloquant, hors ordre)
 
 - Base64 double sur les fichiers du relais (+78 %) et découpe mémoire dans `RelayChunks`.

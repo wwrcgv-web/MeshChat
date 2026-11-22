@@ -233,19 +233,50 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AppState.liveOn = getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean("live_on", false)
         Lang.load(this)
-        // Annuaire et historique disponibles même sans service Bluetooth :
-        // l'envoi par Internet ne doit pas dépendre du Bluetooth
-        MeshState.attach(this)
-        // Relais Internet : service séparé, indépendant du Bluetooth, et soumis au mode choisi
-        if (RelayClient.isEnabled(this)) RelayService.start(this)
+        val accepted = termsAccepted()
         setContent {
-            MeshHome(
-                onStart = { askPermissions() },
-                onStop = { stopMeshService() },
-                onRestart = { restartMeshService() },
-                onEnableBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
-            )
+            var acc by remember { mutableStateOf(accepted) }
+            if (!acc) {
+                // Premier lancement : aucune permission n'est demandée et aucun service ne démarre
+                // tant que les Conditions d'Utilisation ne sont pas acceptées.
+                TermsScreen(
+                    onAccept = {
+                        acceptTerms()
+                        acc = true
+                        startAfterTerms()
+                    }
+                )
+            } else {
+                MeshHome(
+                    onStart = { askPermissions() },
+                    onStop = { stopMeshService() },
+                    onRestart = { restartMeshService() },
+                    onEnableBluetooth = { enableBluetooth.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) }
+                )
+            }
         }
+        if (accepted) startAfterTerms()
+    }
+
+    /** Vrai si les Conditions d'Utilisation ont déjà été acceptées sur ce téléphone. */
+    private fun termsAccepted(): Boolean =
+        getSharedPreferences("meshchat", Context.MODE_PRIVATE).getBoolean(KEY_CGU_ACCEPTED, false)
+
+    /** Enregistre l'acceptation, avec sa date, pour ne plus réafficher l'écran. */
+    private fun acceptTerms() {
+        getSharedPreferences("meshchat", Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_CGU_ACCEPTED, true)
+            .putLong(KEY_CGU_ACCEPTED_AT, System.currentTimeMillis())
+            .apply()
+    }
+
+    /**
+     * Ce qui ne démarre qu'après acceptation : mémoire de l'app (annuaire et historique),
+     * relais Internet, puis demandes de permission et service Bluetooth.
+     */
+    private fun startAfterTerms() {
+        MeshState.attach(this)
+        if (RelayClient.isEnabled(this)) RelayService.start(this)
         if (BleMeshManager.instance == null) askPermissions()
     }
 
@@ -306,6 +337,8 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private const val KEY_CGU_ACCEPTED = "cgv_accepted"
+private const val KEY_CGU_ACCEPTED_AT = "cgv_accepted_at"
 private const val PUBLIC = "public"
 private const val KIND_PHOTO: Byte = 1
 private const val KIND_AUDIO: Byte = 2
