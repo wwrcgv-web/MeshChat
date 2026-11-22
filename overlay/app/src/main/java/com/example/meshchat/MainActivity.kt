@@ -1051,23 +1051,35 @@ private fun MeshHome(
     }
 
     if (showMyQr) {
+        // Fond clair volontaire : un QR code se scanne mieux sur blanc, même en plein soleil
+        val qrInk = Color(0xFF111827)
+        val qrGrey = Color(0xFF5F6B63)
         AlertDialog(
             onDismissRequest = { showMyQr = false },
-            title = { Text(t("my_qr")) },
+            containerColor = Color.White,
+            titleContentColor = qrInk,
+            textContentColor = qrGrey,
+            title = { Text(t("my_qr"), fontSize = 20.sp, fontWeight = FontWeight.Bold) },
             text = {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                     val content = QrShare.myContent(context)
                     if (content != null) {
                         val qr = remember(content) { QrShare.bitmap(content) }
-                        Image(bitmap = qr.asImageBitmap(), contentDescription = t("my_qr"), modifier = Modifier.size(240.dp))
-                        Spacer(Modifier.height(8.dp))
-                        Text(t("my_qr_note"), fontSize = 14.sp, color = grey)
+                        Image(bitmap = qr.asImageBitmap(), contentDescription = t("my_qr"), modifier = Modifier.size(260.dp))
+                        Spacer(Modifier.height(10.dp))
+                        Text(t("my_qr_note"), fontSize = 14.sp, color = qrGrey)
                     } else {
                         Text("—", fontSize = 15.sp)
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { showMyQr = false }) { Text(t("close"), fontSize = 16.sp) } }
+            confirmButton = {
+                Button(
+                    onClick = { showMyQr = false },
+                    modifier = Modifier.height(48.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1F8A4F))
+                ) { Text(t("close"), fontSize = 16.sp) }
+            }
         )
     }
 

@@ -125,7 +125,7 @@ private fun NavItem(icon: String, label: String, selected: Boolean, onClick: () 
     }
 }
 
-/** Écran d'accueil : logo, ⋮ (Réglages) en haut à droite, sélecteur de mode, recherche, filtres, liste, barre du bas à deux entrées. */
+/** Écran d'accueil : logo, ⋮ (Réglages) en haut à droite, sélecteur de mode, liste, barre du bas à deux entrées. */
 @Composable
 fun ChatListScreen(
     context: Context,
@@ -140,8 +140,6 @@ fun ChatListScreen(
     onScan: () -> Unit
 ) {
     var tab by remember { mutableStateOf(0) }
-    var filter by remember { mutableStateOf(0) }
-    var query by remember { mutableStateOf("") }
     var internetOn by remember { mutableStateOf(RelayClient.isEnabled(context)) }
 
     fun previewOf(b: ChatBubble?): String = when {
@@ -151,13 +149,7 @@ fun ChatListScreen(
         else -> (if (b.mine) "${t("you")} : " else "") + b.text
     }
 
-    val q = query.trim().lowercase()
     val ordered = contacts.sortedByDescending { c -> bubbles.indexOfLast { it.chat == c.id } }
-    val shown = ordered.filter { c ->
-        val name = MeshState.nameOf(c.id)
-        (q.isEmpty() || name.lowercase().contains(q)) && (filter == 0 || peers.any { it.id == c.id })
-    }
-    val showAll = (q.isEmpty() || t("all_group").lowercase().contains(q)) && filter == 0
 
     Surface(modifier = Modifier.fillMaxSize(), color = SamchatColors.Background) {
         Column(Modifier.fillMaxSize()) {
@@ -177,6 +169,16 @@ fun ChatListScreen(
                     color = if (serviceOn) SamchatColors.Green else SamchatColors.Grey,
                     fontSize = 13.sp
                 )
+                if (tab == 1) {
+                    IconButton(onClick = onShowQr, modifier = Modifier.size(52.dp)) {
+                        Icon(
+                            painter = painterResource(id = R.drawable.ic_qr),
+                            contentDescription = t("my_qr"),
+                            tint = SamchatColors.Green,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
+                }
                 TextButton(onClick = onSettings, modifier = Modifier.size(52.dp)) {
                     Text("⋮", color = SamchatColors.White, fontSize = 26.sp, fontWeight = FontWeight.Bold)
                 }
@@ -189,50 +191,13 @@ fun ChatListScreen(
                     // Le service de relève suit le mode : inutile de sonder quand Internet est coupé
                     if (on) RelayService.start(context) else RelayService.stop(context)
                 }
-                Spacer(Modifier.height(8.dp))
-                TextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    singleLine = true,
-                    shape = RoundedCornerShape(28.dp),
-                    placeholder = { Text(t("search"), color = SamchatColors.Grey) },
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = SamchatColors.Field,
-                        unfocusedContainerColor = SamchatColors.Field,
-                        focusedTextColor = SamchatColors.White,
-                        unfocusedTextColor = SamchatColors.White,
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        cursorColor = SamchatColors.Green
-                    ),
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)
-                )
-                Row(Modifier.padding(horizontal = 16.dp, vertical = 10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(t("all"), t("in_range")).forEachIndexed { i, label ->
-                        val on = filter == i
-                        Box(
-                            Modifier
-                                .heightIn(min = 44.dp)
-                                .clip(RoundedCornerShape(22.dp))
-                                .background(if (on) SamchatColors.GreenSoft else SamchatColors.Field)
-                                .clickable { filter = i }
-                                .padding(horizontal = 18.dp, vertical = 10.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(label, color = SamchatColors.White, fontSize = 15.sp, fontWeight = if (on) FontWeight.Bold else FontWeight.Normal)
-                        }
-                    }
-                }
-
                 LazyColumn(Modifier.weight(1f).fillMaxWidth()) {
-                    if (showAll) {
-                        item {
-                            val last = bubbles.lastOrNull { it.chat == ALL_CHAT }
-                            ChatRow(t("all_group"), previewOf(last), last?.time?.takeLast(5) ?: "",
-                                online = peers.isNotEmpty(), avatar = null, letter = "👥") { onOpen(ALL_CHAT) }
-                        }
+                    item {
+                        val last = bubbles.lastOrNull { it.chat == ALL_CHAT }
+                        ChatRow(t("all_group"), previewOf(last), last?.time?.takeLast(5) ?: "",
+                            online = peers.isNotEmpty(), avatar = null, letter = "👥") { onOpen(ALL_CHAT) }
                     }
-                    items(shown, key = { it.id }) { c ->
+                    items(ordered, key = { it.id }) { c ->
                         val last = bubbles.lastOrNull { it.chat == c.id }
                         val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
                         val name = MeshState.nameOf(c.id)
@@ -251,17 +216,16 @@ fun ChatListScreen(
                     }
                 }
             } else {
-                Column(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 16.dp)) {
-                    Text("${t("contacts").uppercase()} (${contacts.size})", color = SamchatColors.Grey, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        items(contacts, key = { it.id }) { c ->
-                            val avatar = remember(c.id, profileTick) { ProfileStore.avatarBitmapOf(context, c.id) }
-                            val online = peers.any { it.id == c.id }
-                            val name = MeshState.nameOf(c.id)
-                            ChatRow("@$name", if (online) t("in_range_status") else t("out_of_range"), "",
-                                online = online, avatar = avatar, letter = name.take(1).uppercase()) { onOpen(c.id) }
-                        }
-                    }
+                Box(Modifier.weight(1f).fillMaxWidth()) {
+                    NetworkScreen(
+                        context = context,
+                        contacts = contacts,
+                        peers = peers,
+                        profileTick = profileTick,
+                        onOpen = onOpen,
+                        onShowQr = onShowQr,
+                        onScan = onScan
+                    )
                 }
             }
 

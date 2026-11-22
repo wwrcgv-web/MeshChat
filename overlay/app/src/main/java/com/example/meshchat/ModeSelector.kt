@@ -4,11 +4,14 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -41,6 +44,7 @@ fun ModeSelector(
             titre = "Sans Internet",
             sousTitre = "Amis à côté",
             selected = !internetOn,
+            icon = painterResource(id = R.drawable.ic_bluetooth),
             modifier = Modifier.weight(1f),
             onClick = { onChange(false) }
         )
@@ -53,6 +57,7 @@ private fun ModeOption(
     sousTitre: String,
     selected: Boolean,
     modifier: Modifier,
+    icon: Painter? = null,
     onClick: () -> Unit
 ) {
     Column(
@@ -63,7 +68,18 @@ private fun ModeOption(
             .padding(vertical = 10.dp, horizontal = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(titre, color = SamchatColors.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (icon != null) {
+                Icon(
+                    painter = icon,
+                    contentDescription = null,
+                    tint = SamchatColors.Green,
+                    modifier = Modifier.size(17.dp)
+                )
+                Spacer(Modifier.width(5.dp))
+            }
+            Text(titre, color = SamchatColors.White, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        }
         Text(sousTitre, color = SamchatColors.Grey, fontSize = 12.sp)
     }
 }

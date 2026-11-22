@@ -183,6 +183,29 @@ l'est. Chaque fiche ci-dessous a été re-vérifiée sur le code réel.
   confidentialité doit être relu et hébergé (URL publique), et l'acceptation ne vaut pas
   consentement RGPD pour un traitement de données.
 
+## Hors audit — interface (22/11/2026)
+
+### Écran Discussions — `HomeUi.kt`, `Strings.kt`
+- Barre de recherche et rangée de filtres (« Toutes » / « À portée ») supprimées : la liste
+  remonte directement sous le sélecteur de mode.
+- « Tous » renommé « Groupe » dans les 6 langues (clé `all_group`) ; identifiant interne
+  `public` et diffusion à tous les pairs inchangés.
+- Clés devenues orphelines retirées : `search`, `all`, `in_range`.
+- `onScan` et `onShowQr`, jusqu'ici inutilisés, sont désormais branchés.
+
+### Icône Bluetooth — `ModeSelector.kt`, `res/drawable/ic_bluetooth.xml`
+- Icône verte (17 dp) devant « Sans Internet », teintée `SamchatColors.Green`.
+
+### Écran Réseau (compte et QR) — `NetworkScreen.kt`, `HomeUi.kt`, `MainActivity.kt`
+- Nouvel onglet Contacts : fond clair (`#F4F8F5`), cartes blanches, texte foncé — lisible en
+  plein soleil. Carte « Mon compte » avec un gros bouton vert « Afficher mon QR code » (56 dp)
+  et « Scanner un QR code » ; section Contacts nettement séparée.
+- Icône QR (`ic_qr.xml`) ajoutée en haut à droite de la barre d'accueil sur cet onglet.
+- Dialogue du QR passé en fond blanc (meilleur contraste de scan), titre foncé, bouton vert.
+- Clés `show_qr` et `scan_qr` ajoutées aux 6 langues.
+- Note : `QrShare.kt` ne contient aucune UI (uniquement la génération/lecture du QR) et
+  `AccountScreen.kt` reste la section « sauvegarde du compte » des réglages : non modifiés.
+
 ## À traiter ensuite (non bloquant, hors ordre)
 
 - Base64 double sur les fichiers du relais (+78 %) et découpe mémoire dans `RelayChunks`.
