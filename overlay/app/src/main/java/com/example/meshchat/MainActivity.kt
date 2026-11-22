@@ -1025,7 +1025,7 @@ private fun MeshHome(
     fullscreenPhoto?.let { photo ->
         Dialog(
             onDismissRequest = { fullscreenPhoto = null },
-            properties = DialogProperties(usePlatformDefaultWidth = false)
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
         ) {
             Box(
                 modifier = Modifier
@@ -1045,14 +1045,20 @@ private fun MeshHome(
     }
 
     if (showMyQr) {
-        QrScreen(
-            context = context,
-            onClose = { showMyQr = false },
-            onScanned = { texte ->
-                showMyQr = false
-                traiterScan(texte)
-            }
-        )
+        // Fenêtre plein écran : l'écran QR doit passer au-dessus de tout le reste
+        Dialog(
+            onDismissRequest = { showMyQr = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+        ) {
+            QrScreen(
+                context = context,
+                onClose = { showMyQr = false },
+                onScanned = { texte ->
+                    showMyQr = false
+                    traiterScan(texte)
+                }
+            )
+        }
     }
 
     if (showPicker) {
