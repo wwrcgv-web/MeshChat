@@ -277,7 +277,13 @@ class MainActivity : ComponentActivity() {
         RelayClient.attach(this)
         // Inscription de l'appareil auprès du relais, hors du fil principal (réseau)
         val appContext = applicationContext
-        Thread { RelayClient.assurerEnregistrement(appContext) }.start()
+        Thread {
+            // Null si l'appareil est déjà inscrit : on n'écrit pas de ligne inutile au journal
+            val ligne = RelayClient.assurerEnregistrement(appContext)
+            if (ligne != null) {
+                Handler(Looper.getMainLooper()).post { MeshState.addJournal(ligne) }
+            }
+        }.start()
         // Sans signature ECDSA, l'enregistrement d'appareil serait voué à l'échec : on le dit tôt
         MeshState.addJournal(
             if (LocalIdentity.autoTestSignature(this)) "Signature d'identité : OK"

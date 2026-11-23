@@ -61,16 +61,17 @@ object RelayClient {
         RelayDispatch.boiteDe(LocalIdentity.myPublicHex(context))
 
     /**
-     * Inscrit cet appareil auprès du relais, une seule fois. Retourne vrai si l'inscription
-     * est faite (ou déjà faite). En cas d'échec, l'app continue avec le jeton.
+     * Inscrit cet appareil auprès du relais si ce n'est pas déjà fait. Réessayé à chaque
+     * lancement tant que le Worker n'a pas répondu 201 (l'identifiant n'est alors pas stocké).
+     * Retourne la ligne à écrire au journal, ou null si l'appareil est déjà inscrit.
      */
-    fun assurerEnregistrement(context: Context): Boolean {
-        if (deviceId(context) != null) return true
+    fun assurerEnregistrement(context: Context): String? {
+        if (deviceId(context) != null) return null
 
         val pubIdentite = LocalIdentity.myPublicHex(context)
         val pubAppareil = DeviceKey.publicKeyHex() ?: run {
             lastError = "clé d'appareil indisponible"
-            return false
+            return "Inscription : clé d'appareil indisponible"
         }
         val boite = maBoite(context)
         val horodatage = System.currentTimeMillis() / 1000
@@ -78,7 +79,7 @@ object RelayClient {
         val signature = LocalIdentity.signerAvecIdentite(context, charge.toByteArray(Charsets.UTF_8))
             ?: run {
                 lastError = "signature d'identité impossible"
-                return false
+                return "Inscription : signature d'identité impossible"
             }
 
         val corps = JSONObject()
@@ -89,10 +90,11 @@ object RelayClient {
             .put("signature_identite", Base64.encodeToString(signature, Base64.NO_WRAP))
             .toString()
 
-        val reponse = envoyer("POST", "/enregistrer", corps, emptyMap()) ?: return false
+        val reponse = envoyer("POST", "/enregistrer", corps, emptyMap())
+            ?: return "Inscription : réseau indisponible (${lastError})"
         if (reponse.first != 201) {
             lastError = "inscription refusée (HTTP ${reponse.first})"
-            return false
+            return "Inscription : refusée (HTTP ${reponse.first})"
         }
         val id = try {
             JSONObject(reponse.second).optString("device_id", "")
@@ -101,13 +103,13 @@ object RelayClient {
         }
         if (id.isEmpty()) {
             lastError = "inscription sans identifiant d'appareil"
-            return false
+            return "Inscription : réponse sans identifiant d'appareil"
         }
         prefs(context).edit()
             .putString(KEY_DEVICE_ID, id)
             .putString(KEY_BOITE, boite)
             .apply()
-        return true
+        return "Inscription : OK (appareil ${id.take(8)})"
     }
 
     /** Dépose un contenu chiffré. Le jeton reste requis pendant la transition. */
