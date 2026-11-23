@@ -1091,6 +1091,19 @@ private fun MeshHome(
                     Text("${t("dbg_version")} : ${dist.version}", fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                     Text(dist.fingerprint, fontFamily = FontFamily.Monospace, fontSize = 10.sp)
                     TextButton(onClick = { copyToClipboard(context, dist.fingerprint) }) { Text(t("dbg_copy"), fontSize = 14.sp) }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "${t("dbg_log")} (${journal.size})",
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    journal.takeLast(50).forEach { ligne ->
+                        Text("> $ligne", fontFamily = FontFamily.Monospace, fontSize = 11.sp)
+                    }
+                    TextButton(onClick = { copyToClipboard(context, journal.joinToString("\n")) }) {
+                        Text(t("dbg_copy_log"), fontSize = 14.sp)
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { showDebug = false }) { Text(t("close"), fontSize = 16.sp) } },

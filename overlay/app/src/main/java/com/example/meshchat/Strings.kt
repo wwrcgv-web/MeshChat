@@ -92,6 +92,8 @@ private val STRINGS: Map<String, List<String>> = mapOf(
     "dbg_copy" to listOf("Copier l'empreinte", "Copy fingerprint", "Copy fingerprint", "Copy fingerprint", "Copy fingerprint", "Copy fingerprint"),
     "dbg_reset" to listOf("Remettre à zéro", "Reset", "Reset", "Reset", "Reset", "Reset"),
     "dbg_service" to listOf("Service", "Service", "Service", "Serviço", "الخدمة", "服务"),
+    "dbg_log" to listOf("JOURNAL", "LOG", "REGISTRO", "REGISTO", "السجل", "日志"),
+    "dbg_copy_log" to listOf("Copier le journal", "Copy log", "Copiar el registro", "Copiar o registo", "نسخ السجل", "复制日志"),
     "all_group" to listOf("Groupe", "Group", "Grupo", "Grupo", "المجموعة", "群组"),
     "no_message" to listOf("Aucun message", "No messages", "Sin mensajes", "Sem mensagens", "لا توجد رسائل", "没有消息"),
     "no_contact" to listOf("Aucun contact pour l'instant", "No contacts yet", "Aún no hay contactos", "Ainda sem contactos", "لا توجد جهات اتصال بعد", "暂无联系人"),
