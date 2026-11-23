@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.meshchat.ble.BleMeshManager
 import com.example.meshchat.ble.MeshPeer
+import com.example.meshchat.wifi.WifiAwareSupport
 import com.example.meshchat.service.MeshService
 
 /** Adresse où sont publiées les versions de Samchat (GitHub Releases). */
@@ -431,6 +432,12 @@ fun SettingsHub(
                             radioAware = on; prefs.edit().putBoolean("radio_wifi_aware", on).apply()
                             MeshService.instance?.setWifiAwareEnabled(on)
                         }
+                        Text(
+                            WifiAwareSupport.status(context),
+                            color = if (awareSupported) SamchatColors.Green else SamchatColors.Grey,
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(start = 4.dp, bottom = 10.dp)
+                        )
                         HubSwitch("Wi-Fi Direct", t("wifi_direct_hint"), radioDirect) { on ->
                             radioDirect = on; prefs.edit().putBoolean("radio_wifi_direct", on).apply()
                             MeshService.instance?.setWifiDirectEnabled(on)

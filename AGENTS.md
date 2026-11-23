@@ -248,7 +248,10 @@ Côté app :
   par morceau. L'ancien `CH:` (Base64 interne) reste décodé pour les morceaux déjà en vol.
   `lireMorceau()` et `reassembler()`, inutilisés, ont été supprimés.
 - ~~Clé privée en clair (`my_priv`).~~ Périmé : `SecureKeys` migre déjà vers le Keystore.
-- Réserve (`MeshStore`, 500 entrées) : accepte tout message d'inconnu.
+- ~~Réserve (`MeshStore`, 500 entrées) accepte tout message d'inconnu.~~ **Atténué le
+  23/11/2026** : plafond de 8 messages par étiquette (`MAX_PAR_ETIQUETTE`) pour qu'un contact
+  ne puisse pas chasser les messages des autres. Ce n'est pas une défense complète : un
+  attaquant peut changer d'étiquette à chaque message.
 - ~~Scan BLE en `LOW_LATENCY` permanent.~~ **Fait le 22/11/2026** : scan adaptatif.
   Écran éteint → `LOW_POWER` ; retour au premier plan ou allumage → 30 s de `LOW_LATENCY` ;
   écran allumé sans pair → `LOW_LATENCY` ; sinon `BALANCED`. Signaux fournis par
@@ -256,6 +259,8 @@ Côté app :
   espacés de 20 s (limite Android), le `sweeper` réévalue toutes les 5 s ; le scan n'est pas
   relancé pendant un envoi si `PREF_SCAN_SEND` est faux. **À mesurer** : `dumpsys batterystats`
   et délai de découverte dans les trois états.
+- Wi-Fi Aware : statut affiché sous l'interrupteur (`WifiAwareSupport.status()`), fait le
+  23/11/2026. La découverte et le transfert eux-mêmes restent **jamais exécutés**.
 - Photo 1600 px / qualité 90 vs limite BLE 250 Ko.
 - ~~Nom de paquet `com.example.meshchat` refusé par le Play Store.~~ **Fait le 22/11/2026** :
   `applicationId = io.github.wwrcgv.samchat` (namespace inchangé). Changement à pousser après

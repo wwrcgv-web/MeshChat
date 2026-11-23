@@ -25,6 +25,12 @@ class MeshStore(private val file: File? = null) {
     fun add(id: ByteArray, tag: ByteArray, cipher: ByteArray) {
         purge()
         if (items.any { it.id.contentEquals(id) }) return
+        // Plafond par étiquette : un correspondant ne peut pas remplir la réserve à lui seul
+        // et en chasser les messages des autres.
+        if (items.count { it.tag.contentEquals(tag) } >= MAX_PAR_ETIQUETTE) {
+            val plusAncien = items.indexOfFirst { it.tag.contentEquals(tag) }
+            if (plusAncien >= 0) items.removeAt(plusAncien)
+        }
         while (items.size >= MAX_ITEMS) items.removeAt(0)
         items.add(Item(id, tag, cipher, System.currentTimeMillis() + KEEP_MS))
         save()
@@ -99,6 +105,8 @@ class MeshStore(private val file: File? = null) {
     companion object {
         /** Nombre maximal de messages gardés pour les autres. */
         const val MAX_ITEMS = 500
+        /** Plafond de messages gardés pour une même étiquette (un contact, une boîte du jour). */
+        const val MAX_PAR_ETIQUETTE = 8
         /** Durée de conservation : 24 heures. */
         const val KEEP_MS = 24 * 60 * 60 * 1000L
         const val TAG_SIZE = 8
