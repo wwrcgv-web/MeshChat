@@ -353,6 +353,13 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private fun ouiNon(valeur: Boolean): String = if (valeur) "oui" else "non"
+
+private fun codeDepot(): String {
+    val code = RelayClient.lastDepotCode
+    return if (code < 0) "réseau" else code.toString()
+}
+
 private const val KEY_CGU_ACCEPTED = "cgv_accepted"
 private const val KEY_CGU_ACCEPTED_AT = "cgv_accepted_at"
 private const val PUBLIC = "public"
@@ -774,12 +781,14 @@ private fun MeshHome(
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
 
             val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
+            log("Envoi : privé=${ouiNon(target != null)} clé=${ouiNon(key != null)} cléPub=${ouiNon(peerPub != null)} internet=${ouiNon(RelayClient.isEnabled(context))}")
             if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
                 // Envoi par Internet : la requête part dans un autre fil, l'écran reste fluide
                 draft = ""
                 Thread {
                     val relayId = RelayDispatch.envoyerParRelais(context, key, peerPub, text)
                     Handler(Looper.getMainLooper()).post {
+                        log("Internet : HTTP ${codeDepot()}")
                         if (relayId != null) {
                             MeshState.addBubble(
                                 ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
@@ -818,12 +827,14 @@ private fun MeshHome(
         pendingPhoto?.let { photo ->
             val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
             val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
+            log("Envoi photo : privé=${ouiNon(target != null)} clé=${ouiNon(key != null)} cléPub=${ouiNon(peerPub != null)} internet=${ouiNon(RelayClient.isEnabled(context))}")
             if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
                 // Envoi par Internet : compression et dépôt dans un autre fil, l'écran reste fluide
                 pendingPhoto = null
                 Thread {
                     val fileId = RelayFile.envoyer(context, key, peerPub, compressPhoto(photo), "photo")
                     Handler(Looper.getMainLooper()).post {
+                        log("Internet : HTTP ${codeDepot()}")
                         if (fileId != null) {
                             MeshState.addBubble(
                                 ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = "🌐 ${t("sent")}", msgId = fileId)
@@ -875,12 +886,14 @@ private fun MeshHome(
         val target = if (selectedChat == PUBLIC) null else selectedChat
         val key = if (target != null) LocalIdentity.sharedKeyWith(context, target) else null
         val peerPub = if (target != null) LocalIdentity.peerPublicHex(context, target) else null
+        log("Envoi vocal : privé=${ouiNon(target != null)} clé=${ouiNon(key != null)} cléPub=${ouiNon(peerPub != null)} internet=${ouiNon(RelayClient.isEnabled(context))}")
 
         if (target != null && key != null && peerPub != null && RelayClient.isEnabled(context)) {
             // Envoi par Internet : hors du fil principal, l'écran reste fluide
             Thread {
                 val fileId = RelayFile.envoyer(context, key, peerPub, bytes, "audio")
                 Handler(Looper.getMainLooper()).post {
+                    log("Internet : HTTP ${codeDepot()}")
                     if (fileId != null) {
                         val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
                         file.writeBytes(bytes)

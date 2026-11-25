@@ -32,6 +32,9 @@ object RelayClient {
     /** Code HTTP de la dernière relève : 0 = pas encore de réponse, -1 = connexion impossible. */
     @Volatile var lastReleveCode: Int = 0
 
+    /** Code HTTP du dernier dépôt : 0 = non tenté, -1 = réseau indisponible. */
+    @Volatile var lastDepotCode: Int = 0
+
     /** Un message relevé : son identifiant en base et son contenu chiffré. */
     data class Message(val id: String, val contenu: String)
 
@@ -114,6 +117,7 @@ object RelayClient {
 
     /** Dépose un contenu chiffré. Le jeton reste requis pendant la transition. */
     fun deposer(context: Context, destinataireHache: String, contenuChiffre: String): Boolean {
+        lastDepotCode = 0
         if (token(context).isEmpty()) {
             lastError = "jeton absent dans l'app (secret RELAY_TOKEN)"
             return false
@@ -124,7 +128,12 @@ object RelayClient {
             .toString()
         // La signature est ajoutée quand elle existe : le Worker compte alors par appareil
         val entetes = entetesSignes("POST", "/deposer", corps)
-        val reponse = envoyer("POST", "/deposer", corps, entetes) ?: return false
+        val reponse = envoyer("POST", "/deposer", corps, entetes)
+        if (reponse == null) {
+            lastDepotCode = -1
+            return false
+        }
+        lastDepotCode = reponse.first
         return if (reponse.first == 201) {
             true
         } else {
