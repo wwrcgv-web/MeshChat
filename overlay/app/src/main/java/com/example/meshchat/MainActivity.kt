@@ -789,6 +789,7 @@ private fun MeshHome(
                     val relayId = RelayDispatch.envoyerParRelais(context, key, peerPub, text)
                     Handler(Looper.getMainLooper()).post {
                         log("Internet : HTTP ${codeDepot()}")
+                        if (relayId == null) log("Internet : ${RelayClient.lastError}")
                         if (relayId != null) {
                             MeshState.addBubble(
                                 ChatBubble(true, "moi", text, null, selectedChat, status = "🌐 ${t("sent")}", msgId = relayId)
@@ -803,7 +804,6 @@ private fun MeshHome(
                                 )
                             } else {
                                 if (draft.isEmpty()) draft = text
-                                log("Internet : ${RelayClient.lastError}")
                                 log(t("send_fail"))
                             }
                         }
@@ -835,6 +835,7 @@ private fun MeshHome(
                     val fileId = RelayFile.envoyer(context, key, peerPub, compressPhoto(photo), "photo")
                     Handler(Looper.getMainLooper()).post {
                         log("Internet : HTTP ${codeDepot()}")
+                        if (fileId == null) log("Internet : ${RelayClient.lastError}")
                         if (fileId != null) {
                             MeshState.addBubble(
                                 ChatBubble(true, "moi", t("photo_sent"), photo, selectedChat, status = "🌐 ${t("sent")}", msgId = fileId)
@@ -894,6 +895,7 @@ private fun MeshHome(
                 val fileId = RelayFile.envoyer(context, key, peerPub, bytes, "audio")
                 Handler(Looper.getMainLooper()).post {
                     log("Internet : HTTP ${codeDepot()}")
+                    if (fileId == null) log("Internet : ${RelayClient.lastError}")
                     if (fileId != null) {
                         val file = File(context.cacheDir, "vocal_${System.currentTimeMillis()}.m4a")
                         file.writeBytes(bytes)

@@ -115,13 +115,12 @@ object RelayClient {
         return "Inscription : OK (appareil ${id.take(8)})"
     }
 
-    /** Dépose un contenu chiffré. Le jeton reste requis pendant la transition. */
+    /**
+     * Dépose un contenu chiffré. L'authentification est décidée par le Worker : jeton s'il existe,
+     * sinon signature d'appareil (activée par DEPOT_SIGNATURE côté Worker).
+     */
     fun deposer(context: Context, destinataireHache: String, contenuChiffre: String): Boolean {
         lastDepotCode = 0
-        if (token(context).isEmpty()) {
-            lastError = "jeton absent dans l'app (secret RELAY_TOKEN)"
-            return false
-        }
         val corps = JSONObject()
             .put("destinataire", destinataireHache)
             .put("contenu_chiffre", contenuChiffre)
