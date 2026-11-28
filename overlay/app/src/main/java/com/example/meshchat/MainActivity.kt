@@ -1406,6 +1406,7 @@ private fun BubbleRow(
         else if (unknownAuthor) null
         else ProfileStore.avatarBitmapOf(context, b.author)
     }
+    val pending = b.status?.let { etatDe(it) == Etat.ATTENTE } == true
     val initial = when {
         b.mine -> displayName.take(1).uppercase()
         unknownAuthor -> "?"
@@ -1459,11 +1460,13 @@ private fun BubbleRow(
                         } else {
                             VoiceBubble(path, green, grey)
                             Text(
-                                "⬇ ${t("saved_voice")}",
-                                color = blue,
-                                fontSize = 14.sp,
+                                "⬇",
+                                color = ink,
+                                fontSize = 15.sp,
                                 fontWeight = FontWeight.Bold,
-                                modifier = Modifier.clickable {
+                                modifier = Modifier
+                                    .semantics { contentDescription = t("saved_voice") }
+                                    .clickable {
                                     val name = saveToDownloads(context, path, "audio/mp4", "vocal")
                                     onLog(if (name != null) "Vocal enregistré : Téléchargements/Samchat/$name" else t("send_fail"))
                                 }.padding(vertical = 6.dp)
