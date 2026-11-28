@@ -51,10 +51,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -350,6 +353,66 @@ class MainActivity : ComponentActivity() {
     private fun restartMeshService() {
         stopMeshService()
         Handler(Looper.getMainLooper()).postDelayed({ startMeshService() }, 1000L)
+    }
+}
+
+private enum class Etat { ATTENTE, ENVOYE, RECU, LU, ECHEC }
+
+/** Traduit le statut stocké (texte, hérité) en état affichable. Aucune écriture. */
+private fun etatDe(statut: String?): Etat? = when {
+    statut.isNullOrBlank() -> null
+    statut.contains("Lu") || statut.contains("Read") -> Etat.LU
+    statut.contains("Reçu") || statut.contains("Received") -> Etat.RECU
+    statut.contains("Parti") || statut.contains("Envoyé") || statut.contains("Sent") -> Etat.ENVOYE
+    statut.contains("En attente") || statut.contains("Waiting") -> Etat.ATTENTE
+    statut.contains("Non envoyé") || statut.contains("Not sent") -> Etat.ECHEC
+    else -> null
+}
+
+/** Statut d'une bulle : icône seule, le libellé n'existe que pour l'accessibilité. */
+@Composable
+private fun EtatMessage(statut: String?, fond: Color) {
+    val etat = etatDe(statut) ?: return
+    val clair = fond.luminance() > 0.45f
+    val description = when (etat) {
+        Etat.ATTENTE -> t("status_pending")
+        Etat.ENVOYE -> t("status_sent")
+        Etat.RECU -> t("status_received")
+        Etat.LU -> t("status_read")
+        Etat.ECHEC -> t("status_failed")
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(start = 6.dp).semantics { contentDescription = description }
+    ) {
+        when (etat) {
+            Etat.ATTENTE -> Text("⏳", fontSize = 12.sp)
+            Etat.ECHEC -> Text("✗", color = SamchatColors.Danger, fontSize = 12.sp)
+            Etat.ENVOYE -> Coche("✓", Color.White, if (clair) Color(0xE61F2937) else null)
+            Etat.RECU -> Coche("✓✓", Color.White, if (clair) Color(0xE61F2937) else null)
+            Etat.LU -> Coche("✓✓", Color(0xFF15803D), if (clair) null else Color(0xB3FFFFFF))
+        }
+    }
+}
+
+/**
+ * Une ou deux coches. Sur fond clair, un contour sombre de 4 copies décalées garde le blanc
+ * lisible ; sur fond sombre, le blanc se suffit. Aucun texte n'est affiché.
+ */
+@Composable
+private fun Coche(texte: String, couleur: Color, contour: Color?) {
+    if (contour == null) {
+        Text(texte, color = couleur, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        return
+    }
+    Box(contentAlignment = Alignment.Center) {
+        listOf(-0.6f to 0f, 0.6f to 0f, 0f to -0.6f, 0f to 0.6f).forEach { (dx, dy) ->
+            Text(
+                texte, color = contour, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.offset(dx.dp, dy.dp)
+            )
+        }
+        Text(texte, color = couleur, fontSize = 12.sp, fontWeight = FontWeight.Bold)
     }
 }
 
@@ -1348,9 +1411,6 @@ private fun BubbleRow(
         unknownAuthor -> "?"
         else -> MeshState.nameOf(b.author).take(1).uppercase()
     }
-    val pending = b.status?.contains("En attente") == true || b.status?.contains("Waiting") == true
-    val read = b.status?.let { it.contains("Lu") || it.contains("Read") } == true
-    val received = b.status?.let { it.contains("Reçu") || it.contains("Received") } == true
 
     Box(
         modifier = Modifier.fillMaxWidth().padding(vertical = 5.dp),
@@ -1427,15 +1487,7 @@ private fun BubbleRow(
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(b.time, color = grey, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-                        b.status?.let { s ->
-                            Text(
-                                "  $s",
-                                color = if (read || received) readGreen else grey,
-                                fontSize = if (read || received) 13.sp else 12.sp,
-                                fontWeight = if (read || received) FontWeight.Bold else FontWeight.Normal,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
+                        EtatMessage(b.status, mineBg)
                     }
                 }
             }
